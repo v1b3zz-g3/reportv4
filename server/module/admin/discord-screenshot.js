@@ -6,15 +6,26 @@
      * Upload screenshot to Discord webhook
      * Uses multipart/form-data for binary file upload (Lua can't handle this)
      */
+    /**
+     * Upload screenshot to Discord webhook
+     * Uses multipart/form-data for binary file upload (Lua can't handle this)
+     */
     function uploadScreenshotToDiscord(params, callback) {
-        const { webhookUrl, base64Image, playerName, reportId, botName, botAvatar } = params;
+        const { webhookUrl, threadId, base64Image, playerName, reportId, botName, botAvatar } = params;
 
         console.log(`[sws-report:debug] uploadScreenshotToDiscord called for ${playerName}, report #${reportId}`);
         console.log(`[sws-report:debug] Image data length: ${base64Image?.length || 0}`);
+        console.log(`[sws-report:debug] Thread ID: ${threadId || 'none'}`);
 
         if (!webhookUrl || !base64Image) {
             console.log('[sws-report:debug] Missing webhook or image data');
             callback(false, null, 'Missing webhook URL or image data');
+            return;
+        }
+
+        if (!threadId) {
+            console.log('[sws-report:debug] Missing threadId - report thread must exist first');
+            callback(false, null, 'Missing threadId - report thread must exist first');
             return;
         }
 
@@ -71,11 +82,8 @@
         // Combine parts: header + binary + payload + ending
         const fullBody = Buffer.concat([bodyStart, imageBuffer, bodyEnd]);
 
-        // Parse webhook URL and add ?wait=true to get response with attachment info
-        // Use a thread_name for new thread creation in forum channel
-        const threadName = `[${reportId}]-${playerName}`;
-        const parsedUrl = url.parse(`${webhookUrl}?wait=true&thread_name=${encodeURIComponent(threadName)}`);
-
+        // Use thread_id to post to existing thread instead of creating new one
+        const parsedUrl = url.parse(`${webhookUrl}?wait=true&thread_id=${threadId}`);
 
         const options = {
             hostname: parsedUrl.hostname,
@@ -87,7 +95,7 @@
             }
         };
 
-        console.log(`[sws-report:debug] Sending request to Discord...`);
+        console.log(`[sws-report:debug] Sending request to Discord with thread_id=${threadId}...`);
 
         const req = https.request(options, (res) => {
             let data = '';

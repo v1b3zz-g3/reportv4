@@ -42,9 +42,24 @@ local function uploadAndShowScreenshot(imageData, reportId, playerName, adminSou
         return
     end
 
+    -- Get existing thread ID for this report
+    local threadId = exports["sws-report"]:GetReportThreadId(reportId)
+    if not threadId then
+        PrintError(("No thread found for report #%d - cannot upload screenshot"):format(reportId))
+        -- Still show to admin but without Discord upload
+        TriggerClientEvent("sws-report:showScreenshotPopup", adminSource, {
+            imageData = imageData,
+            playerName = playerName,
+            reportId = reportId
+        })
+        NotifyPlayer(adminSource, L("screenshot_received", playerName) .. " (Discord upload failed - no thread)", "info")
+        return
+    end
+
     -- Upload to Discord and show to admin
     exports["sws-report"]:uploadScreenshotToDiscord({
         webhookUrl = Config.Discord.forumWebhook,
+        threadId = threadId,
         base64Image = imageData,
         playerName = playerName,
         reportId = reportId,
@@ -204,8 +219,22 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
 
                 -- Send to Discord if enabled
                 if Config.Discord.enabled and Config.Discord.forumWebhook and Config.Discord.forumWebhook ~= "" then
+                    -- Get existing thread ID for this report
+                    local threadId = exports["sws-report"]:GetReportThreadId(reportId)
+                    if not threadId then
+                        PrintError(("No thread found for report #%d - cannot upload screenshot"):format(reportId))
+                        -- Fallback to base64 in chat without Discord upload
+                        TriggerClientEvent("sws-report:screenshotCaptured", source, {
+                            reportId = reportId,
+                            imageData = data
+                        })
+                        NotifyPlayer(source, L("screenshot_uploaded"), "success")
+                        return
+                    end
+
                     exports["sws-report"]:uploadScreenshotToDiscord({
                         webhookUrl = Config.Discord.forumWebhook,
+                        threadId = threadId,
                         base64Image = data,
                         playerName = player.name,
                         reportId = reportId,

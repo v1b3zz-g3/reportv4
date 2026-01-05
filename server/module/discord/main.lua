@@ -463,6 +463,21 @@ end)
 
 -- [Other event handlers remain the same]
 
+AddEventHandler("sws-report:discord:screenshot", function(reportId, playerName, imageUrl, capturedBy)
+    if not Config.Discord.enabled or not Config.Discord.forumWebhook then return end
+    sendToReportThread(reportId, buildScreenshotEmbed(playerName, reportId, imageUrl, capturedBy))
+end)
+
+---Get thread ID for a report
+---@param reportId number Report ID
+---@return string|nil threadId Thread ID or nil if not found
+local function getReportThreadId(reportId)
+    return reportThreads[reportId]
+end
+
+-- Export for other modules to get thread IDs
+exports("GetReportThreadId", getReportThreadId)
+
 
 
 DebugPrint("Discord module loaded - All reports will be logged as forum threads")

@@ -58,6 +58,7 @@ local function validateAudioData(audioData, duration)
 end
 
 ---Upload audio to Discord and get CDN URL (via JS module for proper binary handling)
+---Upload audio to Discord and get CDN URL (via JS module for proper binary handling)
 ---@param audioBase64 string Base64 encoded audio
 ---@param reportId integer Report ID
 ---@param senderName string Sender name
@@ -68,10 +69,19 @@ local function uploadToDiscord(audioBase64, reportId, senderName, callback)
         return
     end
 
-    DebugPrint(("Uploading voice message for report #%d (size: %d bytes)"):format(reportId, #audioBase64))
+    -- Get existing thread ID for this report
+    local threadId = exports["sws-report"]:GetReportThreadId(reportId)
+    if not threadId then
+        PrintError(("No thread found for report #%d - cannot upload voice message"):format(reportId))
+        callback(false, nil)
+        return
+    end
+
+    DebugPrint(("Uploading voice message for report #%d to thread %s (size: %d bytes)"):format(reportId, threadId, #audioBase64))
 
     exports["sws-report"]:uploadVoiceToDiscord({
         webhookUrl = Config.Discord.forumWebhook,
+        threadId = threadId,
         base64Audio = audioBase64,
         reportId = reportId,
         senderName = senderName,

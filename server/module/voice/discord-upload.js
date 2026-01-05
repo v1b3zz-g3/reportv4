@@ -14,10 +14,15 @@
             callback = arguments[2];
         }
 
-        const { webhookUrl, base64Audio, reportId, senderName, botName, botAvatar } = params || {};
+        const { webhookUrl, threadId, base64Audio, reportId, senderName, botName, botAvatar } = params || {};
 
         if (!webhookUrl || !base64Audio) {
             if (callback) callback(false, null, 'Missing webhookUrl or base64Audio');
+            return;
+        }
+
+        if (!threadId) {
+            if (callback) callback(false, null, 'Missing threadId - report thread must exist first');
             return;
         }
 
@@ -64,10 +69,9 @@
             bodyParts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
             const fullBody = Buffer.concat(bodyParts);
-            const threadName = `[${reportId}]-${senderName}`;
-           
 
-            const url = new URL(`${webhookUrl}?wait=true&thread_name=${encodeURIComponent(threadName)}`);
+            // Use thread_id to post to existing thread instead of creating new one
+            const url = new URL(`${webhookUrl}?wait=true&thread_id=${threadId}`);
 
             const options = {
                 hostname: url.hostname,
