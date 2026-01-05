@@ -165,6 +165,8 @@ end
 
 ---User requests to take their own screenshot (camera button in chat)
 ---@param reportId integer Report ID
+---User requests to take their own screenshot (camera button in chat)
+---@param reportId integer Report ID
 RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
     local source = source
 
@@ -174,11 +176,6 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
 
     if not screenshotAvailable then
         NotifyPlayer(source, "Screenshot system not ready - please wait a moment", "error")
-        
-        -- Try to re-initialize
-        if not checkingScreenshotBasic then
-           print(1)
-        end
         return
     end
 
@@ -212,15 +209,17 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
 
     -- Take screenshot and upload to Discord + send as message
     Citizen.CreateThread(function()
-        local source = source
-        print(source)
+        local playerSource = source
+        local playerData = player
+        
         local success, err = pcall(function()
             -- Verify player still exists
-            if not DoesPlayerExist(GetPlayerFromServerId(source)) then
+            if not GetPlayerName(playerSource) then
+                PrintWarn("User screenshot failed - player no longer exists")
                 return
             end
 
-            exports["screenshot-basic"]:requestClientScreenshot(source, {
+            exports["screenshot-basic"]:requestClientScreenshot(playerSource, {
                 encoding = "jpg",
                 quality = 0.85
             }, function(captureErr, data)
@@ -228,18 +227,17 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
                     local errStr = tostring(captureErr):lower()
                     
                     if errStr:match("failed to fetch") or errStr:match("network") then
-                        NotifyPlayer(source, "Screenshot failed - system may have restarted. Try again.", "error")
+                        NotifyPlayer(playerSource, "Screenshot failed - system may have restarted. Try again.", "error")
                         PrintWarn("User screenshot failed - possible resource restart")
                         screenshotAvailable = false
-                        initializeScreenshotBasic()
                     else
-                        NotifyPlayer(source, L("screenshot_failed"), "error")
+                        NotifyPlayer(playerSource, L("screenshot_failed"), "error")
                     end
                     return
                 end
 
                 if not data or data == "" then
-                    NotifyPlayer(source, "Screenshot capture failed - no data received", "error")
+                    NotifyPlayer(playerSource, "Screenshot capture failed - no data received", "error")
                     return
                 end
 
@@ -250,11 +248,11 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
                     if not threadId then
                         PrintError(("No thread found for report #%d - cannot upload user screenshot"):format(reportId))
                         -- Fallback to base64 in chat without Discord upload
-                        TriggerClientEvent("sws-report:screenshotCaptured", source, {
+                        TriggerClientEvent("sws-report:screenshotCaptured", playerSource, {
                             reportId = reportId,
                             imageData = data
                         })
-                        NotifyPlayer(source, "Screenshot captured (Discord upload failed - no thread)", "info")
+                        NotifyPlayer(playerSource, "Screenshot captured (Discord upload failed - no thread)", "info")
                         return
                     end
 
@@ -262,42 +260,42 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
                         webhookUrl = Config.Discord.forumWebhook,
                         threadId = threadId,
                         base64Image = data,
-                        playerName = player.name,
+                        playerName = playerData.name,
                         reportId = reportId,
                         botName = Config.Discord.botName,
                         botAvatar = Config.Discord.botAvatar ~= "" and Config.Discord.botAvatar or nil
                     }, function(uploadSuccess, url, errorMsg)
                         if uploadSuccess and url then
                             -- Send as message with Discord URL
-                            SendMessageWithImage(reportId, player, url)
-                            TriggerClientEvent("sws-report:screenshotCaptured", source, {
+                            SendMessageWithImage(reportId, playerData, url)
+                            TriggerClientEvent("sws-report:screenshotCaptured", playerSource, {
                                 reportId = reportId,
                                 imageData = data,
                                 discordUrl = url
                             })
-                            NotifyPlayer(source, L("screenshot_uploaded"), "success")
+                            NotifyPlayer(playerSource, L("screenshot_uploaded"), "success")
                             
                             -- Post to Discord thread
-                            TriggerEvent("sws-report:discord:screenshot", reportId, player.name, url, player.name)
+                            TriggerEvent("sws-report:discord:screenshot", reportId, playerData.name, url, playerData.name)
                             
                             DebugPrint(("User screenshot uploaded to Discord for report #%d"):format(reportId))
                         else
                             PrintWarn(("User screenshot Discord upload failed: %s"):format(errorMsg or "Unknown"))
                             -- Fallback to base64 in chat
-                            TriggerClientEvent("sws-report:screenshotCaptured", source, {
+                            TriggerClientEvent("sws-report:screenshotCaptured", playerSource, {
                                 reportId = reportId,
                                 imageData = data
                             })
-                            NotifyPlayer(source, L("screenshot_uploaded") .. " (Discord upload failed)", "info")
+                            NotifyPlayer(playerSource, L("screenshot_uploaded") .. " (Discord upload failed)", "info")
                         end
                     end)
                 else
                     -- No Discord, send base64 directly
-                    TriggerClientEvent("sws-report:screenshotCaptured", source, {
+                    TriggerClientEvent("sws-report:screenshotCaptured", playerSource, {
                         reportId = reportId,
                         imageData = data
                     })
-                    NotifyPlayer(source, L("screenshot_uploaded"), "success")
+                    NotifyPlayer(playerSource, L("screenshot_uploaded"), "success")
                     DebugPrint(("User screenshot captured for report #%d (no Discord)"):format(reportId))
                 end
             end)
@@ -308,11 +306,10 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
             PrintError(("User screenshot request exception: %s"):format(tostring(err)))
             
             if errStr:match("not found") or errStr:match("no such export") then
-                NotifyPlayer(source, "Screenshot system not available", "error")
+                NotifyPlayer(playerSource, "Screenshot system not available", "error")
                 screenshotAvailable = false
-                initializeScreenshotBasic()
             else
-                NotifyPlayer(source, L("screenshot_failed"), "error")
+                NotifyPlayer(playerSource, L("screenshot_failed"), "error")
             end
         end
     end)
