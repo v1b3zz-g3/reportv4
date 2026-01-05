@@ -228,7 +228,12 @@ RegisterNetEvent("sws-report:playerJoined", function()
     local identifier = getPlayerIdentifier(source)
 
     local rawName = GetPlayerName(source)
-    local name = SanitizeString(rawName or "Unknown", 50)
+    
+    -- CRITICAL FIX: Sanitize username properly
+    local name = SanitizeUsername(rawName or "Unknown", 50)
+    
+    -- Also create a safe version for logs
+    local logName = SanitizeUsernameForLog(rawName or "Unknown")
 
     if not identifier then
         PrintError(("Could not get identifier for player %d"):format(source))
@@ -238,18 +243,23 @@ RegisterNetEvent("sws-report:playerJoined", function()
     Players[source] = {
         source = source,
         identifier = identifier,
-        name = name,
+        name = name, -- Sanitized for general use
+        rawName = rawName, -- Keep original for reference
         isAdmin = IsPlayerAdmin(source)
     }
 
     -- Save all player identifiers to database for offline lookup
     savePlayerIdentifiers(source, identifier)
 
-    DebugPrint(("Player joined: %s (%s) - Admin: %s"):format(name, identifier, tostring(Players[source].isAdmin)))
+    DebugPrint(("Player joined: %s (%s) - Admin: %s"):format(
+        logName, -- Use log-safe name
+        identifier, 
+        tostring(Players[source].isAdmin)
+    ))
 
     TriggerClientEvent("sws-report:setPlayerData", source, {
         identifier = identifier,
-        name = name,
+        name = name, -- Send sanitized name to client
         isAdmin = Players[source].isAdmin,
         voiceMessagesEnabled = VoiceMessagesAvailable and Config.VoiceMessages.enabled
     })

@@ -2,6 +2,45 @@
 ---@type table<number, string>
 local reportThreads = {}
 
+---Active forum threads per report (reportId -> threadId)
+
+
+---Load existing thread IDs from database on startup
+local function loadThreadIdsFromDatabase()
+    local results = MySQL.query.await([[
+        SELECT id, discord_thread_id
+        FROM reports
+        WHERE discord_thread_id IS NOT NULL
+        AND status != 'resolved'
+    ]], {})
+
+    local loaded = 0
+    for _, row in ipairs(results or {}) do
+        if row.discord_thread_id and row.discord_thread_id ~= "" then
+            reportThreads[row.id] = row.discord_thread_id
+            loaded = loaded + 1
+        end
+    end
+
+    if loaded > 0 then
+        PrintInfo(("Loaded %d Discord thread IDs from database"):format(loaded))
+    end
+end
+
+---Save thread ID to database
+local function saveThreadIdToDatabase(reportId, threadId)
+    MySQL.update.await([[
+        UPDATE reports SET discord_thread_id = ? WHERE id = ?
+    ]], { threadId, reportId })
+end
+
+-- Load thread IDs when module loads
+CreateThread(function()
+    Wait(1000)
+    loadThreadIdsFromDatabase()
+    Wait(9000)
+end)
+
 ---Truncate string to max length with ellipsis
 ---@param str string String to truncate
 ---@param maxLen number Maximum length
@@ -18,14 +57,16 @@ end
 local function formatThreadName(report)
     local template = Config.Discord.threadNameFormat or "[#{id}] {player} - {subject}"
     
-    -- Replace placeholders
+    -- Sanitize all user-provided content
+    local safePlayerName = SanitizeUsername(report.playerName or "Unknown", 30)
+    local safeSubject = SanitizeUsername(report.subject or "No subject", 40)
+    
     local name = template
         :gsub("{id}", tostring(report.id))
-        :gsub("{player}", report.playerName or "Unknown")
+        :gsub("{player}", safePlayerName)
         :gsub("{playerId}", report.playerId or "")
-        :gsub("{subject}", report.subject or "No subject")
+        :gsub("{subject}", safeSubject)
     
-    -- Truncate to Discord's 100 character limit
     return truncateString(name, 100)
 end
 
@@ -71,7 +112,11 @@ local function createReportThread(report)
         PrintError("Forum webhook not configured")
         return nil
     end
-
+    local existingThreadId = reportThreads[report.id]
+    if existingThreadId then
+        DebugPrint(("Thread already exists for report #%d: %s"):format(report.id, existingThreadId))
+        return existingThreadId
+    end
     local threadName = formatThreadName(report)
     
     -- Get category config for icon
@@ -121,6 +166,7 @@ local function createReportThread(report)
             if parseSuccess and response and response.id then
                 threadId = response.id
                 reportThreads[report.id] = threadId
+                saveThreadIdToDatabase(report.id, threadId)
                 success = true
                 DebugPrint(("Created forum thread %s for report #%d"):format(threadId, report.id))
             else

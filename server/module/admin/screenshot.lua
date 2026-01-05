@@ -173,7 +173,12 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
     end
 
     if not screenshotAvailable then
-        NotifyPlayer(source, L("screenshot_unavailable"), "error")
+        NotifyPlayer(source, "Screenshot system not ready - please wait a moment", "error")
+        
+        -- Try to re-initialize
+        if not checkingScreenshotBasic then
+           print(1)
+        end
         return
     end
 
@@ -207,13 +212,34 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
 
     -- Take screenshot and upload to Discord + send as message
     Citizen.CreateThread(function()
+        local source = source
+        print(source)
         local success, err = pcall(function()
+            -- Verify player still exists
+            if not DoesPlayerExist(GetPlayerFromServerId(source)) then
+                return
+            end
+
             exports["screenshot-basic"]:requestClientScreenshot(source, {
                 encoding = "jpg",
                 quality = 0.85
             }, function(captureErr, data)
                 if captureErr then
-                    NotifyPlayer(source, L("screenshot_failed"), "error")
+                    local errStr = tostring(captureErr):lower()
+                    
+                    if errStr:match("failed to fetch") or errStr:match("network") then
+                        NotifyPlayer(source, "Screenshot failed - system may have restarted. Try again.", "error")
+                        PrintWarn("User screenshot failed - possible resource restart")
+                        screenshotAvailable = false
+                        initializeScreenshotBasic()
+                    else
+                        NotifyPlayer(source, L("screenshot_failed"), "error")
+                    end
+                    return
+                end
+
+                if not data or data == "" then
+                    NotifyPlayer(source, "Screenshot capture failed - no data received", "error")
                     return
                 end
 
@@ -222,13 +248,13 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
                     -- Get existing thread ID for this report
                     local threadId = exports["sws-report"]:GetReportThreadId(reportId)
                     if not threadId then
-                        PrintError(("No thread found for report #%d - cannot upload screenshot"):format(reportId))
+                        PrintError(("No thread found for report #%d - cannot upload user screenshot"):format(reportId))
                         -- Fallback to base64 in chat without Discord upload
                         TriggerClientEvent("sws-report:screenshotCaptured", source, {
                             reportId = reportId,
                             imageData = data
                         })
-                        NotifyPlayer(source, L("screenshot_uploaded"), "success")
+                        NotifyPlayer(source, "Screenshot captured (Discord upload failed - no thread)", "info")
                         return
                     end
 
@@ -253,13 +279,16 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
                             
                             -- Post to Discord thread
                             TriggerEvent("sws-report:discord:screenshot", reportId, player.name, url, player.name)
+                            
+                            DebugPrint(("User screenshot uploaded to Discord for report #%d"):format(reportId))
                         else
+                            PrintWarn(("User screenshot Discord upload failed: %s"):format(errorMsg or "Unknown"))
                             -- Fallback to base64 in chat
                             TriggerClientEvent("sws-report:screenshotCaptured", source, {
                                 reportId = reportId,
                                 imageData = data
                             })
-                            NotifyPlayer(source, L("screenshot_uploaded"), "success")
+                            NotifyPlayer(source, L("screenshot_uploaded") .. " (Discord upload failed)", "info")
                         end
                     end)
                 else
@@ -269,12 +298,56 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
                         imageData = data
                     })
                     NotifyPlayer(source, L("screenshot_uploaded"), "success")
+                    DebugPrint(("User screenshot captured for report #%d (no Discord)"):format(reportId))
                 end
             end)
         end)
 
         if not success then
-            NotifyPlayer(source, L("screenshot_failed"), "error")
+            local errStr = tostring(err):lower()
+            PrintError(("User screenshot request exception: %s"):format(tostring(err)))
+            
+            if errStr:match("not found") or errStr:match("no such export") then
+                NotifyPlayer(source, "Screenshot system not available", "error")
+                screenshotAvailable = false
+                initializeScreenshotBasic()
+            else
+                NotifyPlayer(source, L("screenshot_failed"), "error")
+            end
         end
     end)
 end)
+
+
+--RegisterCommand("screenshotstatus", function(source, args, rawCommand)
+--    if source == 0 then
+--        -- Console command
+--        print("^3========== Screenshot System Status ==========^0")
+--        print("^2screenshot-basic resource:^0 " .. GetResourceState("screenshot-basic"))
+--        print("^2System marked as available:^0 " .. tostring(screenshotAvailable))
+--        print("^2Currently checking status:^0 " .. tostring(checkingScreenshotBasic))
+--        print("^2Is ready:^0 " .. tostring(isScreenshotBasicReady()))
+--        print("^3============================================^0")
+--        return
+--    end
+--
+--    if not IsPlayerAdmin(source) then
+--        return
+--    end
+--
+--    local statusMsg = string.format(
+--        "Screenshot System Status:\n" ..
+--        "Resource: %s\n" ..
+--        "Available: %s\n" ..
+--        "Checking: %s\n" ..
+--        "Ready: %s",
+--        GetResourceState("screenshot-basic"),
+--        tostring(screenshotAvailable),
+--        tostring(checkingScreenshotBasic),
+--        tostring(isScreenshotBasicReady())
+--    )
+--
+--    NotifyPlayer(source, statusMsg, "info")
+--end, false)
+
+DebugPrint("Screenshot module loaded with comprehensive error handling")

@@ -248,7 +248,7 @@ RegisterNetEvent("sws-report:createReport", function(data)
         return
     end
 
-    local subject = SanitizeString(data.subject, MAX_SUBJECT_LENGTH)
+    local subject = SanitizeUsername(data.subject, MAX_SUBJECT_LENGTH)
     if #subject > MAX_SUBJECT_LENGTH then
         NotifyPlayer(source, L("error_subject_too_long", MAX_SUBJECT_LENGTH), "error")
         return
@@ -265,7 +265,7 @@ RegisterNetEvent("sws-report:createReport", function(data)
             return
         end
         if data.description ~= "" then
-            description = SanitizeString(data.description, MAX_DESCRIPTION_LENGTH)
+            description = SanitizeUsername(data.description, MAX_DESCRIPTION_LENGTH)
         end
     end
 

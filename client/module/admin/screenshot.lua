@@ -1,4 +1,9 @@
 -- Add to client/module/admin/screenshot.lua
+RegisterNetEvent("sws-report:receiveScreenshot", function(imageUrl, playerName)
+    if imageUrl then
+        DebugPrint(("[sws-report] Screenshot from %s: %s"):format(playerName, imageUrl))
+    end
+end)
 
 ---Show screenshot popup in NUI
 RegisterNetEvent("sws-report:showScreenshotPopup", function(data)
