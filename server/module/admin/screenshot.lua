@@ -1,186 +1,264 @@
--- server/module/admin/screenshot.lua
----@type boolean Whether screenshot-basic is available
-local screenshotAvailable = GetResourceState("screenshot-basic") == "started"
+-- server/module/admin/screenshot.lua - ALTERNATIVE SOLUTION
+-- This version uses a different approach to avoid screenshot-basic issues
 
----@type table<integer, number> Screenshot cooldowns per target source
+---@type table<integer, number> Screenshot cooldowns per source
 local screenshotCooldowns = {}
-
----@type integer Screenshot cooldown in milliseconds
 local SCREENSHOT_COOLDOWN = 5000
 
----Check if target is on screenshot cooldown
----@param targetSource integer Target player source
----@return boolean isOnCooldown
-local function isOnScreenshotCooldown(targetSource)
+---Check if on cooldown
+local function isOnScreenshotCooldown(source)
     local now = GetGameTimer()
-    if screenshotCooldowns[targetSource] and now < screenshotCooldowns[targetSource] then
+    if screenshotCooldowns[source] and now < screenshotCooldowns[source] then
         return true
     end
     return false
 end
 
----Set screenshot cooldown for target
----@param targetSource integer Target player source
-local function setScreenshotCooldown(targetSource)
-    screenshotCooldowns[targetSource] = GetGameTimer() + SCREENSHOT_COOLDOWN
+---Set cooldown
+local function setScreenshotCooldown(source)
+    screenshotCooldowns[source] = GetGameTimer() + SCREENSHOT_COOLDOWN
 end
 
----Upload screenshot to Discord and send to admin
----@param imageData string Base64 screenshot data
----@param reportId integer Report ID
----@param playerName string Player name
----@param adminSource integer Admin who requested it
-local function uploadAndShowScreenshot(imageData, reportId, playerName, adminSource)
-    if not Config.Discord.enabled or not Config.Discord.forumWebhook or Config.Discord.forumWebhook == "" then
-        -- No Discord, just show to admin
-        TriggerClientEvent("sws-report:showScreenshotPopup", adminSource, {
-            imageData = imageData,
-            playerName = playerName,
-            reportId = reportId
-        })
-        NotifyPlayer(adminSource, L("screenshot_received", playerName), "success")
+---Alternative 1: Try screenshot-basic with better error handling
+local function tryScreenshotBasic(targetSource, callback)
+    local resourceState = GetResourceState("screenshot-basic")
+    
+    print(("^3[screenshot] Attempting screenshot-basic for source %d^0"):format(targetSource))
+    print(("^3[screenshot] screenshot-basic state: %s^0"):format(resourceState))
+    
+    if resourceState ~= "started" then
+        print("^1[screenshot] screenshot-basic is not started!^0")
+        return false, "screenshot-basic not running"
+    end
+    
+    -- Verify player exists
+    local playerName = GetPlayerName(targetSource)
+    if not playerName then
+        print("^1[screenshot] Player not found!^0")
+        return false, "Player not found"
+    end
+    
+    print(("^2[screenshot] Player found: %s^0"):format(playerName))
+    
+    -- Try to get the export
+    local hasExport = pcall(function()
+        local test = exports["screenshot-basic"]
+        return test ~= nil
+    end)
+    
+    if not hasExport then
+        print("^1[screenshot] screenshot-basic export not accessible!^0")
+        return false, "Export not accessible"
+    end
+    
+    print("^2[screenshot] Export accessible, requesting screenshot...^0")
+    
+    -- Create a timeout tracker
+    local completed = false
+    local timeoutTimer = SetTimeout(10000, function()
+        if not completed then
+            completed = true
+            print("^1[screenshot] Request TIMED OUT after 10 seconds^0")
+            callback(false, nil, "Timeout - screenshot-basic not responding")
+        end
+    end)
+    
+    -- Wrap in pcall to catch any errors
+    local success, err = pcall(function()
+        print("^3[screenshot] Calling requestClientScreenshot...^0")
+        
+        exports["screenshot-basic"]:requestClientScreenshot(targetSource, {
+            encoding = "jpg",
+            quality = 0.85
+        }, function(captureErr, data)
+            print("^3[screenshot] Callback received!^0")
+            
+            if completed then
+                print("^3[screenshot] Already timed out, ignoring callback^0")
+                return
+            end
+            
+            completed = true
+            ClearTimeout(timeoutTimer)
+            
+            if captureErr then
+                print(("^1[screenshot] Capture error: %s^0"):format(tostring(captureErr)))
+                callback(false, nil, tostring(captureErr))
+                return
+            end
+            
+            if not data or #data < 100 then
+                print("^1[screenshot] Invalid data received^0")
+                callback(false, nil, "Invalid screenshot data")
+                return
+            end
+            
+            print(("^2[screenshot] SUCCESS! Captured %d bytes^0"):format(#data))
+            callback(true, data, nil)
+        end)
+        
+        print("^3[screenshot] requestClientScreenshot call completed (waiting for callback)^0")
+    end)
+    
+    if not success then
+        if not completed then
+            completed = true
+            ClearTimeout(timeoutTimer)
+        end
+        print(("^1[screenshot] Exception during request: %s^0"):format(tostring(err)))
+        return false, tostring(err)
+    end
+    
+    return true, nil
+end
+
+---Alternative 2: Use game native screenshot (doesn't require screenshot-basic)
+local function tryNativeScreenshot(targetSource, callback)
+    print("^3[screenshot] Trying native screenshot method^0")
+    
+    -- Request client to take screenshot using game natives
+    TriggerClientEvent("sws-report:takeNativeScreenshot", targetSource)
+    
+    -- Wait for response
+    local completed = false
+    local timeoutTimer = SetTimeout(10000, function()
+        if not completed then
+            completed = true
+            callback(false, nil, "Native screenshot timeout")
+        end
+    end)
+    
+    -- Listen for response (we'll add the client event handler later)
+    local eventHandler = nil
+    eventHandler = RegisterNetEvent("sws-report:nativeScreenshotData", function(data)
+        local source = source
+        
+        if source == targetSource and not completed then
+            completed = true
+            ClearTimeout(timeoutTimer)
+            RemoveEventHandler(eventHandler)
+            
+            if data and #data > 100 then
+                print(("^2[screenshot] Native screenshot success: %d bytes^0"):format(#data))
+                callback(true, data, nil)
+            else
+                print("^1[screenshot] Native screenshot failed - no data^0")
+                callback(false, nil, "No screenshot data")
+            end
+        end
+    end)
+end
+
+---Upload screenshot to Discord
+local function uploadToDiscord(imageData, reportId, playerName, callback)
+    if not Config.Discord.enabled or not Config.Discord.forumWebhook then
+        callback(false, nil, "Discord not configured")
         return
     end
 
-    -- Get existing thread ID for this report
     local threadId = exports["sws-report"]:GetReportThreadId(reportId)
     if not threadId then
-        PrintError(("No thread found for report #%d - cannot upload screenshot"):format(reportId))
-        -- Still show to admin but without Discord upload
-        TriggerClientEvent("sws-report:showScreenshotPopup", adminSource, {
-            imageData = imageData,
-            playerName = playerName,
-            reportId = reportId
-        })
-        NotifyPlayer(adminSource, L("screenshot_received", playerName) .. " (Discord upload failed - no thread)", "info")
+        callback(false, nil, "No Discord thread")
         return
     end
 
-    -- Upload to Discord and show to admin
+    print(("^3[screenshot] Uploading to Discord thread %s^0"):format(threadId))
+
     exports["sws-report"]:uploadScreenshotToDiscord({
         webhookUrl = Config.Discord.forumWebhook,
         threadId = threadId,
         base64Image = imageData,
         playerName = playerName,
         reportId = reportId,
-        botName = Config.Discord.botName,
-        botAvatar = Config.Discord.botAvatar ~= "" and Config.Discord.botAvatar or nil
+        botName = Config.Discord.botName or "Report System",
+        botAvatar = Config.Discord.botAvatar or ""
     }, function(success, url, errorMsg)
-        -- Always show to admin regardless of Discord upload status
-        TriggerClientEvent("sws-report:showScreenshotPopup", adminSource, {
-            imageData = imageData,
-            playerName = playerName,
-            reportId = reportId,
-            discordUrl = url
-        })
-
         if success and url then
-            DebugPrint(("Screenshot uploaded to Discord: %s"):format(url))
-            NotifyPlayer(adminSource, L("screenshot_received", playerName), "success")
-            
-            -- Trigger Discord event to post to thread
-            local admin = Players[adminSource]
-            if admin then
-                TriggerEvent("sws-report:discord:screenshot", reportId, playerName, url, admin.name)
-            end
+            print(("^2[screenshot] Discord upload SUCCESS: %s^0"):format(url))
+            callback(true, url, nil)
         else
-            PrintError(("Screenshot Discord upload failed: %s"):format(errorMsg or "Unknown error"))
-            NotifyPlayer(adminSource, L("screenshot_received", playerName) .. " (Discord upload failed)", "info")
+            print(("^1[screenshot] Discord upload FAILED: %s^0"):format(errorMsg or "Unknown"))
+            callback(false, nil, errorMsg)
         end
     end)
 end
 
----Execute screenshot request and send directly to admin
----@param targetSource integer Target player source
----@param notifySource integer Source to notify on success/error
----@param reportId integer Report ID
----@param playerName string Player name
-local function executeScreenshotRequest(targetSource, notifySource, reportId, playerName)
-    Citizen.CreateThread(function()
-        local success, err = pcall(function()
-            exports["screenshot-basic"]:requestClientScreenshot(targetSource, {
-                encoding = "jpg",
-                quality = 0.85
-            }, function(captureErr, data)
-                if captureErr then
-                    DebugPrint(("Screenshot capture failed: %s"):format(tostring(captureErr)))
-                    NotifyPlayer(notifySource, L("screenshot_failed"), "error")
-                    return
+---Main screenshot handler - tries multiple methods
+local function captureScreenshot(targetSource, reportId, playerName, onComplete)
+    print(("^3========== Starting screenshot for source %d ==========^0"):format(targetSource))
+    
+    -- Try screenshot-basic first
+    local basicSuccess, basicError = tryScreenshotBasic(targetSource, function(success, data, err)
+        if success and data then
+            print("^2[screenshot] screenshot-basic method succeeded^0")
+            
+            -- Upload to Discord
+            uploadToDiscord(data, reportId, playerName, function(uploadSuccess, url, uploadErr)
+                if uploadSuccess then
+                    onComplete(true, data, url)
+                else
+                    -- Upload failed but we have the screenshot
+                    onComplete(true, data, nil)
                 end
-
-                DebugPrint(("Screenshot captured for report #%d"):format(reportId))
-                uploadAndShowScreenshot(data, reportId, playerName, notifySource)
             end)
-        end)
-
-        if not success then
-            PrintError(("Screenshot request failed: %s"):format(tostring(err)))
-            NotifyPlayer(notifySource, L("screenshot_failed"), "error")
+        else
+            print(("^1[screenshot] screenshot-basic failed: %s^0"):format(err or "Unknown"))
+            print("^3[screenshot] Trying native screenshot method...^0")
+            
+            -- Try native method as fallback
+            tryNativeScreenshot(targetSource, function(nativeSuccess, nativeData, nativeErr)
+                if nativeSuccess and nativeData then
+                    print("^2[screenshot] Native method succeeded^0")
+                    
+                    uploadToDiscord(nativeData, reportId, playerName, function(uploadSuccess, url, uploadErr)
+                        if uploadSuccess then
+                            onComplete(true, nativeData, url)
+                        else
+                            onComplete(true, nativeData, nil)
+                        end
+                    end)
+                else
+                    print(("^1[screenshot] Native method also failed: %s^0"):format(nativeErr or "Unknown"))
+                    onComplete(false, nil, nil, "All screenshot methods failed")
+                end
+            end)
         end
     end)
+    
+    if not basicSuccess then
+        print(("^1[screenshot] Could not start screenshot-basic: %s^0"):format(basicError))
+        print("^3[screenshot] Falling back to native method^0")
+        
+        tryNativeScreenshot(targetSource, function(nativeSuccess, nativeData, nativeErr)
+            if nativeSuccess and nativeData then
+                uploadToDiscord(nativeData, reportId, playerName, function(uploadSuccess, url, uploadErr)
+                    if uploadSuccess then
+                        onComplete(true, nativeData, url)
+                    else
+                        onComplete(true, nativeData, nil)
+                    end
+                end)
+            else
+                onComplete(false, nil, nil, "All methods failed")
+            end
+        end)
+    end
 end
 
----Take screenshot of player (admin action)
----@param adminSource integer Admin server ID
----@param reportId integer Report ID
-function ScreenshotPlayer(adminSource, reportId)
-    if not screenshotAvailable then
-        NotifyPlayer(adminSource, L("screenshot_unavailable"), "error")
-        return
-    end
-
-    local report = Reports[reportId]
-
-    if not report then
-        NotifyPlayer(adminSource, L("error_not_found"), "error")
-        return
-    end
-
-    local playerData = GetPlayerByIdentifier(report:getPlayerId())
-
-    if not playerData then
-        NotifyPlayer(adminSource, L("player_offline"), "error")
-        return
-    end
-
-    if isOnScreenshotCooldown(playerData.source) then
-        NotifyPlayer(adminSource, L("screenshot_cooldown"), "error")
-        return
-    end
-
-    setScreenshotCooldown(playerData.source)
-
-    NotifyPlayer(adminSource, L("screenshot_requested"), "info")
-
-    DebugPrint(("Admin %s requested screenshot from player %s (Report #%d)"):format(
-        Players[adminSource].name,
-        playerData.name,
-        reportId
-    ))
-
-    executeScreenshotRequest(playerData.source, adminSource, reportId, playerData.name)
-
-    TriggerEvent("sws-report:discord:adminAction", "screenshot_player", Players[adminSource], playerData, reportId)
-end
-
----User requests to take their own screenshot (camera button in chat)
----@param reportId integer Report ID
----User requests to take their own screenshot (camera button in chat)
----@param reportId integer Report ID
+---User screenshot request
 RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
     local source = source
 
-    if not IsValidReportId(reportId) then
-        return
-    end
+    print(("^3[screenshot] User screenshot request from source %d for report #%d^0"):format(source, reportId))
 
-    if not screenshotAvailable then
-        NotifyPlayer(source, "Screenshot system not ready - please wait a moment", "error")
+    if not IsValidReportId(reportId) then
+        print("^1[screenshot] Invalid report ID^0")
         return
     end
 
     local player = GetPlayerData(source)
     if not player then
+        print("^1[screenshot] Player data not found^0")
         return
     end
 
@@ -199,152 +277,101 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
     end
 
     if isOnScreenshotCooldown(source) then
-        NotifyPlayer(source, L("screenshot_cooldown"), "error")
+        NotifyPlayer(source, "Please wait before taking another screenshot.", "error")
         return
     end
 
     setScreenshotCooldown(source)
+    NotifyPlayer(source, "Taking screenshot...", "info")
 
-    DebugPrint(("User %s taking screenshot for report %d"):format(player.name, reportId))
-
-    -- Take screenshot and upload to Discord + send as message
-    Citizen.CreateThread(function()
-        local playerSource = source
-        local playerData = player
-        
-        local success, err = pcall(function()
-            -- Verify player still exists
-            if not GetPlayerName(playerSource) then
-                PrintWarn("User screenshot failed - player no longer exists")
-                return
-            end
-
-            exports["screenshot-basic"]:requestClientScreenshot(playerSource, {
-                encoding = "jpg",
-                quality = 0.85
-            }, function(captureErr, data)
-                if captureErr then
-                    local errStr = tostring(captureErr):lower()
-                    
-                    if errStr:match("failed to fetch") or errStr:match("network") then
-                        NotifyPlayer(playerSource, "Screenshot failed - system may have restarted. Try again.", "error")
-                        PrintWarn("User screenshot failed - possible resource restart")
-                        screenshotAvailable = false
-                    else
-                        NotifyPlayer(playerSource, L("screenshot_failed"), "error")
-                    end
-                    return
-                end
-
-                if not data or data == "" then
-                    NotifyPlayer(playerSource, "Screenshot capture failed - no data received", "error")
-                    return
-                end
-
-                -- Send to Discord if enabled
-                if Config.Discord.enabled and Config.Discord.forumWebhook and Config.Discord.forumWebhook ~= "" then
-                    -- Get existing thread ID for this report
-                    local threadId = exports["sws-report"]:GetReportThreadId(reportId)
-                    if not threadId then
-                        PrintError(("No thread found for report #%d - cannot upload user screenshot"):format(reportId))
-                        -- Fallback to base64 in chat without Discord upload
-                        TriggerClientEvent("sws-report:screenshotCaptured", playerSource, {
-                            reportId = reportId,
-                            imageData = data
-                        })
-                        NotifyPlayer(playerSource, "Screenshot captured (Discord upload failed - no thread)", "info")
-                        return
-                    end
-
-                    exports["sws-report"]:uploadScreenshotToDiscord({
-                        webhookUrl = Config.Discord.forumWebhook,
-                        threadId = threadId,
-                        base64Image = data,
-                        playerName = playerData.name,
-                        reportId = reportId,
-                        botName = Config.Discord.botName,
-                        botAvatar = Config.Discord.botAvatar ~= "" and Config.Discord.botAvatar or nil
-                    }, function(uploadSuccess, url, errorMsg)
-                        if uploadSuccess and url then
-                            -- Send as message with Discord URL
-                            SendMessageWithImage(reportId, playerData, url)
-                            TriggerClientEvent("sws-report:screenshotCaptured", playerSource, {
-                                reportId = reportId,
-                                imageData = data,
-                                discordUrl = url
-                            })
-                            NotifyPlayer(playerSource, L("screenshot_uploaded"), "success")
-                            
-                            -- Post to Discord thread
-                            TriggerEvent("sws-report:discord:screenshot", reportId, playerData.name, url, playerData.name)
-                            
-                            DebugPrint(("User screenshot uploaded to Discord for report #%d"):format(reportId))
-                        else
-                            PrintWarn(("User screenshot Discord upload failed: %s"):format(errorMsg or "Unknown"))
-                            -- Fallback to base64 in chat
-                            TriggerClientEvent("sws-report:screenshotCaptured", playerSource, {
-                                reportId = reportId,
-                                imageData = data
-                            })
-                            NotifyPlayer(playerSource, L("screenshot_uploaded") .. " (Discord upload failed)", "info")
-                        end
-                    end)
-                else
-                    -- No Discord, send base64 directly
-                    TriggerClientEvent("sws-report:screenshotCaptured", playerSource, {
-                        reportId = reportId,
-                        imageData = data
-                    })
-                    NotifyPlayer(playerSource, L("screenshot_uploaded"), "success")
-                    DebugPrint(("User screenshot captured for report #%d (no Discord)"):format(reportId))
-                end
-            end)
-        end)
-
-        if not success then
-            local errStr = tostring(err):lower()
-            PrintError(("User screenshot request exception: %s"):format(tostring(err)))
+    captureScreenshot(source, reportId, player.name, function(success, imageData, discordUrl, errorMsg)
+        if success and imageData then
+            -- Send to client
+            TriggerClientEvent("sws-report:screenshotCaptured", source, {
+                reportId = reportId,
+                imageData = imageData,
+                discordUrl = discordUrl
+            })
             
-            if errStr:match("not found") or errStr:match("no such export") then
-                NotifyPlayer(playerSource, "Screenshot system not available", "error")
-                screenshotAvailable = false
+            -- Save to chat if Discord worked
+            if discordUrl then
+                SendMessageWithImage(reportId, player, discordUrl)
+                TriggerEvent("sws-report:discord:screenshot", reportId, player.name, discordUrl, player.name)
+                NotifyPlayer(source, "Screenshot uploaded!", "success")
             else
-                NotifyPlayer(playerSource, L("screenshot_failed"), "error")
+                NotifyPlayer(source, "Screenshot captured (Discord upload failed)", "info")
             end
+        else
+            NotifyPlayer(source, "Screenshot failed: " .. (errorMsg or "Unknown error"), "error")
         end
     end)
 end)
 
+-- Admin screenshot (similar implementation)
+function ScreenshotPlayer(adminSource, reportId)
+    local report = Reports[reportId]
+    if not report then
+        NotifyPlayer(adminSource, L("error_not_found"), "error")
+        return
+    end
 
---RegisterCommand("screenshotstatus", function(source, args, rawCommand)
---    if source == 0 then
---        -- Console command
---        print("^3========== Screenshot System Status ==========^0")
---        print("^2screenshot-basic resource:^0 " .. GetResourceState("screenshot-basic"))
---        print("^2System marked as available:^0 " .. tostring(screenshotAvailable))
---        print("^2Currently checking status:^0 " .. tostring(checkingScreenshotBasic))
---        print("^2Is ready:^0 " .. tostring(isScreenshotBasicReady()))
---        print("^3============================================^0")
---        return
---    end
---
---    if not IsPlayerAdmin(source) then
---        return
---    end
---
---    local statusMsg = string.format(
---        "Screenshot System Status:\n" ..
---        "Resource: %s\n" ..
---        "Available: %s\n" ..
---        "Checking: %s\n" ..
---        "Ready: %s",
---        GetResourceState("screenshot-basic"),
---        tostring(screenshotAvailable),
---        tostring(checkingScreenshotBasic),
---        tostring(isScreenshotBasicReady())
---    )
---
---    NotifyPlayer(source, statusMsg, "info")
---end, false)
+    local playerData = GetPlayerByIdentifier(report:getPlayerId())
+    if not playerData then
+        NotifyPlayer(adminSource, L("player_offline"), "error")
+        return
+    end
 
-DebugPrint("Screenshot module loaded with comprehensive error handling")
+    if isOnScreenshotCooldown(playerData.source) then
+        NotifyPlayer(adminSource, L("screenshot_cooldown"), "error")
+        return
+    end
+
+    setScreenshotCooldown(playerData.source)
+    NotifyPlayer(adminSource, "Screenshot requested...", "info")
+
+    captureScreenshot(playerData.source, reportId, playerData.name, function(success, imageData, discordUrl, errorMsg)
+        if success then
+            TriggerClientEvent("sws-report:showScreenshotPopup", adminSource, {
+                imageData = imageData,
+                playerName = playerData.name,
+                reportId = reportId,
+                discordUrl = discordUrl
+            })
+            NotifyPlayer(adminSource, L("screenshot_received", playerData.name), "success")
+        else
+            NotifyPlayer(adminSource, "Screenshot failed: " .. (errorMsg or "Unknown"), "error")
+        end
+    end)
+end
+
+-- Debug command
+RegisterCommand("screenshotdebug", function(source)
+    if source == 0 then
+        print("^3========== Screenshot System Debug ==========^0")
+        print("screenshot-basic state: " .. GetResourceState("screenshot-basic"))
+        
+        local hasExport = pcall(function()
+            return exports["screenshot-basic"] ~= nil
+        end)
+        print("Export accessible: " .. tostring(hasExport))
+        
+        print("Discord enabled: " .. tostring(Config.Discord.enabled))
+        print("Webhook set: " .. tostring(Config.Discord.forumWebhook ~= nil and Config.Discord.forumWebhook ~= ""))
+        print("^3============================================^0")
+        return
+    end
+    
+    if not IsPlayerAdmin(source) then return end
+    
+    NotifyPlayer(source, string.format(
+        "Screenshot Debug:\nscreenshot-basic: %s\nDiscord: %s",
+        GetResourceState("screenshot-basic"),
+        tostring(Config.Discord.enabled and Config.Discord.forumWebhook ~= "")
+    ), "info")
+end, false)
+
+CreateThread(function()
+    Wait(3000)
+    print("^3[screenshot] Module loaded with fallback support^0")
+    print("^3[screenshot] screenshot-basic state: " .. GetResourceState("screenshot-basic") .. "^0")
+end)

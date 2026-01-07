@@ -1,12 +1,12 @@
-server_script '@ElectronAC/src/include/server.lua'
-client_script '@ElectronAC/src/include/client.lua'
+
+
 fx_version "cerulean"
 game "gta5"
 lua54 "yes"
 
 author "SwisserDev"
 description "Standalone Report System for FiveM"
-version "1.0.7"
+version "1.0.8"
 
 shared_scripts {
     "config/main.lua",
