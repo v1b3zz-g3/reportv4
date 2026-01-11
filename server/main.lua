@@ -104,6 +104,16 @@ function IsPlayerAdmin(source)
 end
 
 
+--test func func below
+
+RegisterNetEvent("QBCORE:updatedgroup", function(src, group)
+    local source=src
+    IsPlayerAdmin(source)
+end)
+
+--end of test func if it works keep func above
+
+
 ---Get player data
 ---@param source integer Player server ID
 ---@return PlayerData | nil
@@ -190,36 +200,37 @@ AddEventHandler("playerConnecting", function(name, setKickReason, deferrals)
 end)
 
 
-RegisterCommand("refreshadmin", function(source)
-    if not source or source == 0 then return end
-    
-    local wasAdmin = Admins[source] or false
-    local isNowAdmin = IsPlayerAdmin(source)
-    
-    Admins[source] = isNowAdmin
-    
-    if Players[source] then
-        Players[source].isAdmin = isNowAdmin
-        
-        TriggerClientEvent("sws-report:setPlayerData", source, {
-            identifier = Players[source].identifier,
-            name = Players[source].name,
-            isAdmin = isNowAdmin,
-            voiceMessagesEnabled = VoiceMessagesAvailable and Config.VoiceMessages.enabled
-        })
-        
-        if isNowAdmin and not wasAdmin then
-            -- New admin - send all active reports
-            local allActiveReports = GetActiveReports()
-            TriggerClientEvent("sws-report:setAllReports", source, allActiveReports)
-            NotifyPlayer(source, "Admin permissions granted - UI refreshed", "success")
-        elseif not isNowAdmin and wasAdmin then
-            NotifyPlayer(source, "Admin permissions revoked - UI refreshed", "info")
-        else
-            NotifyPlayer(source, "Admin status: " .. tostring(isNowAdmin), "info")
-        end
-    end
-end, false)
+--RegisterCommand("refreshadmin", function(source)
+--    if not source or source == 0 then return end
+--    
+--    local wasAdmin = Admins[source] or false
+--    local isNowAdmin = IsPlayerAdmin(source)
+--    
+--    Admins[source] = isNowAdmin
+--    
+--    if Players[source] then
+--        Players[source].isAdmin = isNowAdmin
+--        
+--        TriggerClientEvent("sws-report:setPlayerData", source, {
+--            identifier = Players[source].identifier,
+--            name = Players[source].name,
+--            isAdmin = isNowAdmin,
+--            voiceMessagesEnabled = VoiceMessagesAvailable and Config.VoiceMessages.enabled
+--        })
+--        
+--        if isNowAdmin and not wasAdmin then
+--            -- New admin - send all active reports
+--            local allActiveReports = GetActiveReports()
+--            TriggerClientEvent("sws-report:setAllReports", source, allActiveReports)
+--            NotifyPlayer(source, "Admin permissions granted - UI refreshed", "success")
+--        elseif not isNowAdmin and wasAdmin then
+--            NotifyPlayer(source, "Admin permissions revoked - UI refreshed", "info")
+--        else
+--            NotifyPlayer(source, "Admin status: " .. tostring(isNowAdmin), "info")
+--        end
+--    end
+--end, false)
+--
 
 
 ---Player joined handler
@@ -239,7 +250,12 @@ RegisterNetEvent("sws-report:playerJoined", function()
         PrintError(("Could not get identifier for player %d"):format(source))
         return
     end
+
+    Wait(20000)
+    print(1)
     
+
+
     Players[source] = {
         source = source,
         identifier = identifier,

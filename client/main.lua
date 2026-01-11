@@ -602,9 +602,9 @@ RegisterCommand("checkadmin", function()
     print("^3============================================================^0")
 end, false)
 
-RegisterCommand("refreshadmin", function()
-    ExecuteCommand("refreshadmin") -- Triggers server command
-end, false)
+--RegisterCommand("refreshadmin", function()
+--    ExecuteCommand("refreshadmin") -- Triggers server command
+--end, false)
 
 -- Listen for admin status updates
 RegisterNetEvent("sws-report:adminStatusUpdated", function(newAdminStatus)
@@ -637,3 +637,108 @@ end)
 exports("ToggleUI", function()
     toggleUI()
 end)
+
+
+-- Add to client/main.lua - Client-side screenshot debouncing
+
+---@type table<number, number> Local screenshot cooldowns by report ID
+local clientScreenshotCooldowns = {}
+local CLIENT_SCREENSHOT_COOLDOWN = 10000 -- 10 seconds
+
+---Check if screenshot is on cooldown for this report
+---@param reportId number Report ID
+---@return boolean onCooldown
+---@return number remainingSeconds
+local function isScreenshotOnClientCooldown(reportId)
+    if not clientScreenshotCooldowns[reportId] then
+        return false, 0
+    end
+    
+    local now = GetGameTimer()
+    if now < clientScreenshotCooldowns[reportId] then
+        local remaining = math.ceil((clientScreenshotCooldowns[reportId] - now) / 1000)
+        return true, remaining
+    end
+    
+    clientScreenshotCooldowns[reportId] = nil
+    return false, 0
+end
+
+---Set client-side cooldown for report screenshot
+---@param reportId number Report ID
+local function setClientScreenshotCooldown(reportId)
+    clientScreenshotCooldowns[reportId] = GetGameTimer() + CLIENT_SCREENSHOT_COOLDOWN
+    DebugPrint(("Client cooldown set for report #%d"):format(reportId))
+end
+
+-- Override the takeScreenshot callback to include client-side check
+RegisterNUICallback("takeScreenshot", function(data, cb)
+    local reportId = data.reportId
+    
+    if not reportId then
+        cb("ok")
+        return
+    end
+    
+    -- Client-side cooldown check
+    local onCooldown, remaining = isScreenshotOnClientCooldown(reportId)
+    if onCooldown then
+        DebugPrint(("Screenshot blocked - cooldown active (%d seconds remaining)"):format(remaining))
+        
+        -- Send notification to NUI
+        SendNUIMessage({
+            type = NuiMessageType.NOTIFICATION,
+            data = {
+                message = string.format("Please wait %d seconds before taking another screenshot.", remaining),
+                notifyType = "error"
+            }
+        })
+        
+        cb("ok")
+        return
+    end
+    
+    -- Set cooldown immediately
+    setClientScreenshotCooldown(reportId)
+    
+    -- Request screenshot from server
+    TriggerServerEvent("sws-report:requestUserScreenshot", reportId)
+    
+    cb("ok")
+end)
+
+-- Clean up cooldowns periodically
+CreateThread(function()
+    while true do
+        Wait(30000) -- Every 30 seconds
+        
+        local now = GetGameTimer()
+        local cleaned = 0
+        
+        for reportId, cooldownEnd in pairs(clientScreenshotCooldowns) do
+            if now > cooldownEnd then
+                clientScreenshotCooldowns[reportId] = nil
+                cleaned = cleaned + 1
+            end
+        end
+        
+        if cleaned > 0 then
+            DebugPrint(("Cleaned up %d expired screenshot cooldowns"):format(cleaned))
+        end
+    end
+end)
+
+-- Status command for debugging
+RegisterCommand("screenshotstatus", function()
+    print("^3========== Screenshot Cooldown Status ==========^0")
+    print(("Active cooldowns: %d"):format(#clientScreenshotCooldowns))
+    
+    local now = GetGameTimer()
+    for reportId, cooldownEnd in pairs(clientScreenshotCooldowns) do
+        local remaining = math.ceil((cooldownEnd - now) / 1000)
+        if remaining > 0 then
+            print(("  Report #%d: %d seconds remaining"):format(reportId, remaining))
+        end
+    end
+    print("^3==============================================^0")
+end, false)

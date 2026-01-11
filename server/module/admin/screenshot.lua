@@ -1,17 +1,19 @@
--- server/module/admin/screenshot.lua - ALTERNATIVE SOLUTION
--- This version uses a different approach to avoid screenshot-basic issues
+-- server/module/admin/screenshot.lua - Enhanced version with better error handling
 
 ---@type table<integer, number> Screenshot cooldowns per source
 local screenshotCooldowns = {}
-local SCREENSHOT_COOLDOWN = 5000
+---@type table<integer, boolean> Active screenshot requests (prevents duplicates)
+local activeScreenshots = {}
+local SCREENSHOT_COOLDOWN = 10000 -- Increased to 10 seconds
 
 ---Check if on cooldown
 local function isOnScreenshotCooldown(source)
     local now = GetGameTimer()
     if screenshotCooldowns[source] and now < screenshotCooldowns[source] then
-        return true
+        local remaining = math.ceil((screenshotCooldowns[source] - now) / 1000)
+        return true, remaining
     end
-    return false
+    return false, 0
 end
 
 ---Set cooldown
@@ -19,7 +21,17 @@ local function setScreenshotCooldown(source)
     screenshotCooldowns[source] = GetGameTimer() + SCREENSHOT_COOLDOWN
 end
 
----Alternative 1: Try screenshot-basic with better error handling
+---Check if screenshot already in progress
+local function isScreenshotInProgress(source)
+    return activeScreenshots[source] == true
+end
+
+---Mark screenshot as in progress
+local function setScreenshotInProgress(source, inProgress)
+    activeScreenshots[source] = inProgress or nil
+end
+
+---Try screenshot-basic with enhanced error handling
 local function tryScreenshotBasic(targetSource, callback)
     local resourceState = GetResourceState("screenshot-basic")
     
@@ -40,7 +52,7 @@ local function tryScreenshotBasic(targetSource, callback)
     
     print(("^2[screenshot] Player found: %s^0"):format(playerName))
     
-    -- Try to get the export
+    -- Verify export exists
     local hasExport = pcall(function()
         local test = exports["screenshot-basic"]
         return test ~= nil
@@ -53,25 +65,25 @@ local function tryScreenshotBasic(targetSource, callback)
     
     print("^2[screenshot] Export accessible, requesting screenshot...^0")
     
-    -- Create a timeout tracker
+    -- Create timeout tracker
     local completed = false
     local timeoutTimer = SetTimeout(10000, function()
         if not completed then
             completed = true
-            print("^1[screenshot] Request TIMED OUT after 10 seconds^0")
-            callback(false, nil, "Timeout - screenshot-basic not responding")
+            print(("^1[screenshot] Request TIMED OUT after 10 seconds for source %d^0"):format(targetSource))
+            callback(false, nil, "Screenshot timeout - try again or contact an admin if issue persists")
         end
     end)
     
-    -- Wrap in pcall to catch any errors
+    -- Wrap in pcall
     local success, err = pcall(function()
-        print("^3[screenshot] Calling requestClientScreenshot...^0")
+        print(("^3[screenshot] Calling requestClientScreenshot for source %d...^0"):format(targetSource))
         
         exports["screenshot-basic"]:requestClientScreenshot(targetSource, {
             encoding = "jpg",
             quality = 0.85
         }, function(captureErr, data)
-            print("^3[screenshot] Callback received!^0")
+            print(("^3[screenshot] Callback received for source %d^0"):format(targetSource))
             
             if completed then
                 print("^3[screenshot] Already timed out, ignoring callback^0")
@@ -82,18 +94,18 @@ local function tryScreenshotBasic(targetSource, callback)
             ClearTimeout(timeoutTimer)
             
             if captureErr then
-                print(("^1[screenshot] Capture error: %s^0"):format(tostring(captureErr)))
-                callback(false, nil, tostring(captureErr))
+                print(("^1[screenshot] Capture error for source %d: %s^0"):format(targetSource, tostring(captureErr)))
+                callback(false, nil, "Screenshot capture failed: " .. tostring(captureErr))
                 return
             end
             
             if not data or #data < 100 then
-                print("^1[screenshot] Invalid data received^0")
-                callback(false, nil, "Invalid screenshot data")
+                print(("^1[screenshot] Invalid data received for source %d^0"):format(targetSource))
+                callback(false, nil, "Invalid screenshot data received")
                 return
             end
             
-            print(("^2[screenshot] SUCCESS! Captured %d bytes^0"):format(#data))
+            print(("^2[screenshot] SUCCESS for source %d! Captured %d bytes^0"):format(targetSource, #data))
             callback(true, data, nil)
         end)
         
@@ -105,30 +117,31 @@ local function tryScreenshotBasic(targetSource, callback)
             completed = true
             ClearTimeout(timeoutTimer)
         end
-        print(("^1[screenshot] Exception during request: %s^0"):format(tostring(err)))
+        print(("^1[screenshot] Exception during request for source %d: %s^0"):format(targetSource, tostring(err)))
         return false, tostring(err)
     end
     
     return true, nil
 end
 
----Alternative 2: Use game native screenshot (doesn't require screenshot-basic)
+---Try native screenshot method
 local function tryNativeScreenshot(targetSource, callback)
-    print("^3[screenshot] Trying native screenshot method^0")
+    print(("^3[screenshot] Trying native screenshot method for source %d^0"):format(targetSource))
     
     -- Request client to take screenshot using game natives
     TriggerClientEvent("sws-report:takeNativeScreenshot", targetSource)
     
     -- Wait for response
     local completed = false
-    local timeoutTimer = SetTimeout(10000, function()
+    local timeoutTimer = SetTimeout(12000, function()
         if not completed then
             completed = true
+            print(("^1[screenshot] Native screenshot timeout for source %d^0"):format(targetSource))
             callback(false, nil, "Native screenshot timeout")
         end
     end)
     
-    -- Listen for response (we'll add the client event handler later)
+    -- Listen for response
     local eventHandler = nil
     eventHandler = RegisterNetEvent("sws-report:nativeScreenshotData", function(data)
         local source = source
@@ -139,11 +152,11 @@ local function tryNativeScreenshot(targetSource, callback)
             RemoveEventHandler(eventHandler)
             
             if data and #data > 100 then
-                print(("^2[screenshot] Native screenshot success: %d bytes^0"):format(#data))
+                print(("^2[screenshot] Native screenshot success for source %d: %d bytes^0"):format(targetSource, #data))
                 callback(true, data, nil)
             else
-                print("^1[screenshot] Native screenshot failed - no data^0")
-                callback(false, nil, "No screenshot data")
+                print(("^1[screenshot] Native screenshot failed for source %d - no data^0"):format(targetSource))
+                callback(false, nil, "Screenshot failed - please try again")
             end
         end
     end)
@@ -158,11 +171,11 @@ local function uploadToDiscord(imageData, reportId, playerName, callback)
 
     local threadId = exports["sws-report"]:GetReportThreadId(reportId)
     if not threadId then
-        callback(false, nil, "No Discord thread")
+        callback(false, nil, "No Discord thread found for this report")
         return
     end
 
-    print(("^3[screenshot] Uploading to Discord thread %s^0"):format(threadId))
+    print(("^3[screenshot] Uploading to Discord thread %s for report #%d^0"):format(threadId, reportId))
 
     exports["sws-report"]:uploadScreenshotToDiscord({
         webhookUrl = Config.Discord.forumWebhook,
@@ -178,56 +191,66 @@ local function uploadToDiscord(imageData, reportId, playerName, callback)
             callback(true, url, nil)
         else
             print(("^1[screenshot] Discord upload FAILED: %s^0"):format(errorMsg or "Unknown"))
-            callback(false, nil, errorMsg)
+            callback(false, nil, errorMsg or "Discord upload failed")
         end
     end)
 end
 
----Main screenshot handler - tries multiple methods
+---Main screenshot handler - tries multiple methods with user feedback
 local function captureScreenshot(targetSource, reportId, playerName, onComplete)
-    print(("^3========== Starting screenshot for source %d ==========^0"):format(targetSource))
+    print(("^3========== Starting screenshot for source %d (Report #%d) ==========^0"):format(targetSource, reportId))
+    
+    -- Notify user that screenshot is starting
+    NotifyPlayer(targetSource, "Taking screenshot... Please wait.", "info")
     
     -- Try screenshot-basic first
     local basicSuccess, basicError = tryScreenshotBasic(targetSource, function(success, data, err)
         if success and data then
-            print("^2[screenshot] screenshot-basic method succeeded^0")
+            print(("^2[screenshot] screenshot-basic method succeeded for source %d^0"):format(targetSource))
             
             -- Upload to Discord
             uploadToDiscord(data, reportId, playerName, function(uploadSuccess, url, uploadErr)
                 if uploadSuccess then
                     onComplete(true, data, url)
                 else
-                    -- Upload failed but we have the screenshot
+                    -- Screenshot captured but upload failed
                     onComplete(true, data, nil)
+                    NotifyPlayer(targetSource, "Screenshot captured but Discord upload failed", "info")
                 end
             end)
         else
-            print(("^1[screenshot] screenshot-basic failed: %s^0"):format(err or "Unknown"))
+            print(("^1[screenshot] screenshot-basic failed for source %d: %s^0"):format(targetSource, err or "Unknown"))
             print("^3[screenshot] Trying native screenshot method...^0")
+            
+            -- Notify user we're trying another method
+            NotifyPlayer(targetSource, "First method failed, trying alternative...", "info")
             
             -- Try native method as fallback
             tryNativeScreenshot(targetSource, function(nativeSuccess, nativeData, nativeErr)
                 if nativeSuccess and nativeData then
-                    print("^2[screenshot] Native method succeeded^0")
+                    print(("^2[screenshot] Native method succeeded for source %d^0"):format(targetSource))
                     
                     uploadToDiscord(nativeData, reportId, playerName, function(uploadSuccess, url, uploadErr)
                         if uploadSuccess then
                             onComplete(true, nativeData, url)
                         else
                             onComplete(true, nativeData, nil)
+                            NotifyPlayer(targetSource, "Screenshot captured but Discord upload failed", "info")
                         end
                     end)
                 else
-                    print(("^1[screenshot] Native method also failed: %s^0"):format(nativeErr or "Unknown"))
-                    onComplete(false, nil, nil, "All screenshot methods failed")
+                    print(("^1[screenshot] All methods failed for source %d^0"):format(targetSource))
+                    onComplete(false, nil, nil, err or "Screenshot failed - please try again or contact an admin")
                 end
             end)
         end
     end)
     
     if not basicSuccess then
-        print(("^1[screenshot] Could not start screenshot-basic: %s^0"):format(basicError))
-        print("^3[screenshot] Falling back to native method^0")
+        print(("^1[screenshot] Could not start screenshot-basic for source %d: %s^0"):format(targetSource, basicError))
+        print("^3[screenshot] Falling back to native method immediately^0")
+        
+        NotifyPlayer(targetSource, "Trying alternative screenshot method...", "info")
         
         tryNativeScreenshot(targetSource, function(nativeSuccess, nativeData, nativeErr)
             if nativeSuccess and nativeData then
@@ -239,13 +262,13 @@ local function captureScreenshot(targetSource, reportId, playerName, onComplete)
                     end
                 end)
             else
-                onComplete(false, nil, nil, "All methods failed")
+                onComplete(false, nil, nil, nativeErr or "All screenshot methods failed")
             end
         end)
     end
 end
 
----User screenshot request
+---User screenshot request (from chat button)
 RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
     local source = source
 
@@ -253,12 +276,29 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
 
     if not IsValidReportId(reportId) then
         print("^1[screenshot] Invalid report ID^0")
+        NotifyPlayer(source, "Invalid report ID", "error")
+        return
+    end
+
+    -- CRITICAL: Check if screenshot already in progress
+    if isScreenshotInProgress(source) then
+        print(("^1[screenshot] BLOCKED - Screenshot already in progress for source %d^0"):format(source))
+        NotifyPlayer(source, "Screenshot already in progress, please wait...", "error")
+        return
+    end
+
+    -- CRITICAL: Check cooldown with remaining time
+    local onCooldown, remaining = isOnScreenshotCooldown(source)
+    if onCooldown then
+        print(("^1[screenshot] BLOCKED - Cooldown active for source %d (%d seconds remaining)^0"):format(source, remaining))
+        NotifyPlayer(source, string.format("Please wait %d seconds before taking another screenshot.", remaining), "error")
         return
     end
 
     local player = GetPlayerData(source)
     if not player then
         print("^1[screenshot] Player data not found^0")
+        NotifyPlayer(source, "Player data error", "error")
         return
     end
 
@@ -276,15 +316,18 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
         return
     end
 
-    if isOnScreenshotCooldown(source) then
-        NotifyPlayer(source, "Please wait before taking another screenshot.", "error")
-        return
-    end
-
+    -- Mark as in progress BEFORE starting
+    setScreenshotInProgress(source, true)
     setScreenshotCooldown(source)
-    NotifyPlayer(source, "Taking screenshot...", "info")
+    
+    print(("^2[screenshot] STARTING screenshot for source %d - marked as in progress^0"):format(source))
+    NotifyPlayer(source, "Starting screenshot capture...", "info")
 
     captureScreenshot(source, reportId, player.name, function(success, imageData, discordUrl, errorMsg)
+        -- CRITICAL: Clear in-progress flag when done
+        setScreenshotInProgress(source, false)
+        print(("^2[screenshot] COMPLETED for source %d - cleared in-progress flag^0"):format(source))
+        
         if success and imageData then
             -- Send to client
             TriggerClientEvent("sws-report:screenshotCaptured", source, {
@@ -297,17 +340,19 @@ RegisterNetEvent("sws-report:requestUserScreenshot", function(reportId)
             if discordUrl then
                 SendMessageWithImage(reportId, player, discordUrl)
                 TriggerEvent("sws-report:discord:screenshot", reportId, player.name, discordUrl, player.name)
-                NotifyPlayer(source, "Screenshot uploaded!", "success")
+                NotifyPlayer(source, "Screenshot uploaded successfully!", "success")
             else
                 NotifyPlayer(source, "Screenshot captured (Discord upload failed)", "info")
             end
         else
-            NotifyPlayer(source, "Screenshot failed: " .. (errorMsg or "Unknown error"), "error")
+            local errorMessage = errorMsg or "Screenshot failed - please try again"
+            NotifyPlayer(source, errorMessage, "error")
+            print(("^1[screenshot] Final error for source %d: %s^0"):format(source, errorMessage))
         end
     end)
 end)
 
--- Admin screenshot (similar implementation)
+-- Admin screenshot
 function ScreenshotPlayer(adminSource, reportId)
     local report = Reports[reportId]
     if not report then
@@ -321,15 +366,29 @@ function ScreenshotPlayer(adminSource, reportId)
         return
     end
 
-    if isOnScreenshotCooldown(playerData.source) then
-        NotifyPlayer(adminSource, L("screenshot_cooldown"), "error")
+    -- Check if screenshot already in progress for target player
+    if isScreenshotInProgress(playerData.source) then
+        NotifyPlayer(adminSource, "Screenshot already in progress for this player - please wait.", "error")
         return
     end
 
+    -- Check cooldown
+    local onCooldown, remaining = isOnScreenshotCooldown(playerData.source)
+    if onCooldown then
+        NotifyPlayer(adminSource, string.format("Screenshot cooldown active - wait %d seconds.", remaining), "error")
+        return
+    end
+
+    setScreenshotInProgress(playerData.source, true)
     setScreenshotCooldown(playerData.source)
+    
     NotifyPlayer(adminSource, "Screenshot requested...", "info")
+    NotifyPlayer(playerData.source, "An admin is taking a screenshot of your screen...", "info")
 
     captureScreenshot(playerData.source, reportId, playerData.name, function(success, imageData, discordUrl, errorMsg)
+        -- Clear in-progress flag
+        setScreenshotInProgress(playerData.source, false)
+        
         if success then
             TriggerClientEvent("sws-report:showScreenshotPopup", adminSource, {
                 imageData = imageData,
@@ -339,10 +398,19 @@ function ScreenshotPlayer(adminSource, reportId)
             })
             NotifyPlayer(adminSource, L("screenshot_received", playerData.name), "success")
         else
-            NotifyPlayer(adminSource, "Screenshot failed: " .. (errorMsg or "Unknown"), "error")
+            local errorMessage = errorMsg or "Screenshot failed"
+            NotifyPlayer(adminSource, errorMessage, "error")
+            NotifyPlayer(playerData.source, "Screenshot failed - contact admin if this persists", "info")
         end
     end)
 end
+
+-- Cleanup on player disconnect
+AddEventHandler("playerDropped", function()
+    local source = source
+    screenshotCooldowns[source] = nil
+    activeScreenshots[source] = nil
+end)
 
 -- Debug command
 RegisterCommand("screenshotdebug", function(source)
@@ -363,15 +431,24 @@ RegisterCommand("screenshotdebug", function(source)
     
     if not IsPlayerAdmin(source) then return end
     
-    NotifyPlayer(source, string.format(
-        "Screenshot Debug:\nscreenshot-basic: %s\nDiscord: %s",
+    local debugInfo = string.format(
+        "Screenshot Debug:\nscreenshot-basic: %s\nDiscord: %s\nYour source ID: %d",
         GetResourceState("screenshot-basic"),
-        tostring(Config.Discord.enabled and Config.Discord.forumWebhook ~= "")
-    ), "info")
+        tostring(Config.Discord.enabled and Config.Discord.forumWebhook ~= ""),
+        source
+    )
+    
+    NotifyPlayer(source, debugInfo, "info")
+    
+    -- Log to server console for this specific player
+    print(("^3[screenshot] Debug for source %d (%s):^0"):format(source, GetPlayerName(source)))
+    print(("^3[screenshot] - screenshot-basic: %s^0"):format(GetResourceState("screenshot-basic")))
+    print(("^3[screenshot] - Discord configured: %s^0"):format(tostring(Config.Discord.enabled and Config.Discord.forumWebhook ~= "")))
 end, false)
 
 CreateThread(function()
     Wait(3000)
-    print("^3[screenshot] Module loaded with fallback support^0")
+    print("^3[screenshot] Enhanced module loaded with detailed error handling^0")
     print("^3[screenshot] screenshot-basic state: " .. GetResourceState("screenshot-basic") .. "^0")
+    print("^3[screenshot] Use /screenshotdebug command for diagnostics^0")
 end)
