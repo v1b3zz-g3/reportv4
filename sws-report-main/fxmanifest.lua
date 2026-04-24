@@ -1,10 +1,12 @@
+
+
 fx_version "cerulean"
 game "gta5"
 lua54 "yes"
 
 author "SwisserDev"
 description "Standalone Report System for FiveM"
-version "1.0.7"
+version "1.0.8"
 
 shared_scripts {
     "config/main.lua",
@@ -44,7 +46,9 @@ ui_page "web/out/index.html"
 
 files {
     "web/out/**/*",
-    "locales/*.lua"
+    "locales/*.lua",
+    "sounds/*.ogg",
+    "web/public/*.ogg"
 }
 
 dependencies {

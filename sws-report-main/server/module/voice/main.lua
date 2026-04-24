@@ -63,15 +63,24 @@ end
 ---@param senderName string Sender name
 ---@param callback fun(success: boolean, url: string | nil)
 local function uploadToDiscord(audioBase64, reportId, senderName, callback)
-    if not Config.Discord.enabled or not Config.Discord.webhook or Config.Discord.webhook == "" then
+    if not Config.Discord.enabled or not Config.Discord.forumWebhook or Config.Discord.forumWebhook == "" then
         callback(false, nil)
         return
     end
 
-    DebugPrint(("Uploading voice message for report #%d (size: %d bytes)"):format(reportId, #audioBase64))
+    -- Get existing thread ID for this report
+    local threadId = exports["sws-report"]:GetReportThreadId(reportId)
+    if not threadId then
+        PrintError(("No thread found for report #%d - cannot upload voice message"):format(reportId))
+        callback(false, nil)
+        return
+    end
+
+    DebugPrint(("Uploading voice message for report #%d to thread %s (size: %d bytes)"):format(reportId, threadId, #audioBase64))
 
     exports["sws-report"]:uploadVoiceToDiscord({
-        webhookUrl = Config.Discord.webhook,
+        webhookUrl = Config.Discord.forumWebhook,
+        threadId = threadId,
         base64Audio = audioBase64,
         reportId = reportId,
         senderName = senderName,
@@ -138,6 +147,10 @@ RegisterNetEvent("sws-report:sendVoiceMessage", function(reportId, audioBase64, 
         return
     end
 
+    print(("^3[VOICE] Processing voice message from %s (source: %d, admin: %s) for report #%d^0"):format(
+        player.name, source, tostring(isAdmin), reportId
+    ))
+
     uploadToDiscord(audioBase64, reportId, player.name, function(success, cdnUrl)
         if not success or not cdnUrl then
             NotifyPlayer(source, L("error_voice_upload_failed"), "error")
@@ -185,27 +198,89 @@ RegisterNetEvent("sws-report:sendVoiceMessage", function(reportId, audioBase64, 
 
         MySQL.update.await("UPDATE reports SET updated_at = NOW() WHERE id = ?", { reportId })
 
+        print(("^2[VOICE] Voice message saved - ID: %d, URL: %s^0"):format(insertId, cdnUrl))
+
+        -- CRITICAL: Send to report owner
         local ownerData = GetPlayerByIdentifier(report:getPlayerId())
         if ownerData and ownerData.source ~= source then
+            print(("^3[VOICE] Sending to report owner (source: %d)^0"):format(ownerData.source))
             TriggerClientEvent("sws-report:newMessage", ownerData.source, messageData)
             TriggerClientEvent("sws-report:playSound", ownerData.source, "message")
+        else
+            print(("^3[VOICE] Report owner not online or is sender^0"))
         end
 
+        -- CRITICAL: Send to ALL admins
+        local adminCount = 0
         for adminSource, adminStatus in pairs(Admins) do
             if adminStatus and adminSource ~= source then
+                print(("^3[VOICE] Sending to admin (source: %d)^0"):format(adminSource))
                 TriggerClientEvent("sws-report:newMessage", adminSource, messageData)
                 TriggerClientEvent("sws-report:playSound", adminSource, "message")
+                adminCount = adminCount + 1
             end
         end
 
+        print(("^2[VOICE] Sent voice message to %d admins^0"):format(adminCount))
+
+        -- Send confirmation back to sender
         TriggerClientEvent("sws-report:messageSent", source, messageData)
 
+        -- Discord notification
         TriggerEvent("sws-report:discord:voiceMessage", report:serialize(), messageData)
 
-        DebugPrint(("Voice message in Report #%d from %s (duration: %ds)"):format(
-            reportId, player.name, audioDuration
+        print(("^2[VOICE] Voice message complete: Report #%d from %s (duration: %ds, admins notified: %d)^0"):format(
+            reportId, player.name, audioDuration, adminCount
         ))
     end)
+end)
+
+-- Debug command to test voice message reception
+RegisterCommand("testvoice", function(source)
+    if source == 0 then return end
+    
+    if not IsPlayerAdmin(source) then
+        print(("^1[VOICE-TEST] Source %d is not an admin^0"):format(source))
+        return
+    end
+    
+    print(("^3[VOICE-TEST] Testing voice message for admin source %d^0"):format(source))
+    
+    -- Send a test voice message
+    local testMessage = {
+        id = 99999,
+        reportId = 1,
+        senderId = "test",
+        senderName = "Test User",
+        senderType = SenderType.PLAYER,
+        message = "[Test Voice Message]",
+        messageType = MessageType.VOICE,
+        audioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+        audioDuration = 10,
+        createdAt = os.date("%Y-%m-%d %H:%M:%S")
+    }
+    
+    print(("^3[VOICE-TEST] Sending test message to source %d^0"):format(source))
+    TriggerClientEvent("sws-report:newMessage", source, testMessage)
+    
+    print(("^2[VOICE-TEST] Test message sent!^0"))
+end, false)
+
+-- Debug: List all current admins
+RegisterCommand("listadmins", function(source)
+    if source ~= 0 then return end
+    
+    print("^3========== CURRENT ADMINS ==========^0")
+    local count = 0
+    for adminSource, isAdmin in pairs(Admins) do
+        if isAdmin then
+            local name = GetPlayerName(adminSource) or "Unknown"
+            print(("Source: %d | Name: %s"):format(adminSource, name))
+            count = count + 1
+        end
+    end
+    print(("Total admins online: %d"):format(count))
+    print("^3====================================^0")
 end)
 
 DebugPrint("Voice module loaded")

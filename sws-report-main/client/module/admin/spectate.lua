@@ -50,13 +50,19 @@ end)
 ---Update spectate target position
 CreateThread(function()
     while true do
-        if isSpectating and spectateTarget then
-            local targetPed = GetPlayerPed(GetPlayerFromServerId(spectateTarget))
+        local sleep = 2000
 
-            if not DoesEntityExist(targetPed) then
+        if isSpectating and spectateTarget then
+            local playerId = GetPlayerFromServerId(spectateTarget)
+
+            if playerId == -1 or not DoesEntityExist(GetPlayerPed(playerId)) then
                 TriggerServerEvent("sws-report:adminAction", 0, "spectate_player")
             end
+        else
+            sleep = 10000 -- check less often when idle
         end
-        Wait(1000)
+
+        Wait(sleep)
     end
 end)
+

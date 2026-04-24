@@ -1,18 +1,19 @@
 ---Heal player
 RegisterNetEvent("sws-report:heal", function()
     local ped = PlayerPedId()
+    local playerId = NetworkGetPlayerIndexFromPed(ped)
     SetEntityHealth(ped, GetEntityMaxHealth(ped))
     ClearPedBloodDamage(ped)
+
+    
+	TriggerEvent('hospital:client:adminHeal',playerId)
+	
+	
 end)
 
 ---Revive player
 RegisterNetEvent("sws-report:revive", function()
     local ped = PlayerPedId()
-    local coords = GetEntityCoords(ped)
-    local heading = GetEntityHeading(ped)
-
-    NetworkResurrectLocalPlayer(coords.x, coords.y, coords.z, heading, true, false)
-    SetEntityHealth(ped, GetEntityMaxHealth(ped))
-    ClearPedBloodDamage(ped)
-    ClearPedTasksImmediately(ped)
+    local playerId = NetworkGetPlayerIndexFromPed(ped)
+    TriggerEvent('hospital:client:Revive', playerId)
 end)

@@ -71,6 +71,67 @@ function SerializeCoords(coords)
     return json.encode(coords)
 end
 
+---Sanitize username for Discord (thread names, embeds, etc.)
+---Removes/replaces characters that could break Discord formatting
+---@param username string Raw username
+---@param maxLength? integer Maximum length (default 50)
+---@return string sanitized Sanitized username
+function SanitizeUsername(username, maxLength)
+    if type(username) ~= "string" or username == "" then
+        return "Unknown"
+    end
+    maxLength = maxLength or 50
+    local sanitized = username
+        :gsub("[*_~`|]", "")
+        :gsub("[@#]", "")
+        :gsub("[<>]", "")
+        :gsub("[\r\n\t]", " ")
+        :gsub("%s+", " ")
+        :gsub("^%s+", ""):gsub("%s+$", "")
+    if sanitized == "" then return "Unknown" end
+    if #sanitized > maxLength then
+        sanitized = sanitized:sub(1, maxLength - 3) .. "..."
+    end
+    return sanitized
+end
+
+---Sanitize username for filenames (screenshots, voice messages)
+---Only allows alphanumeric, underscore, and hyphen
+---@param username string Raw username
+---@param maxLength? integer Maximum length (default 32)
+---@return string sanitized Safe filename component
+function SanitizeUsernameForFilename(username, maxLength)
+    if type(username) ~= "string" or username == "" then
+        return "unknown"
+    end
+    maxLength = maxLength or 32
+    local sanitized = username:lower()
+        :gsub("[^a-z0-9_%-]", "_")
+        :gsub("_+", "_")
+        :gsub("^[_%-]+", ""):gsub("[_%-]+$", "")
+    if sanitized == "" then sanitized = "user" end
+    if #sanitized > maxLength then
+        sanitized = sanitized:sub(1, maxLength)
+    end
+    return sanitized
+end
+
+---Sanitize username for logging
+---Escapes special characters that could break log output
+---@param username string Raw username
+---@return string sanitized Safe for logging
+function SanitizeUsernameForLog(username)
+    if type(username) ~= "string" or username == "" then
+        return "Unknown"
+    end
+    return username
+        :gsub("%^", "^^")
+        :gsub("[\r\n\t]", " ")
+        :gsub("%s+", " ")
+        :gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+
 ---Deserialize coordinates from JSON string
 ---@param str string JSON string
 ---@return Coordinates | nil

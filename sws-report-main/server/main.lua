@@ -22,6 +22,8 @@ VoiceMessagesAvailable = false
 ---Get player primary identifier
 ---@param source integer Player server ID
 ---@return string | nil
+local QBCore = exports['qb-core']:GetCoreObject()
+
 local function getPlayerIdentifier(source)
     local identifiers = GetPlayerIdentifiers(source)
 
@@ -83,32 +85,132 @@ local function savePlayerIdentifiers(source, primaryIdentifier)
     ]], { primaryIdentifier, parsed.license, parsed.steam, parsed.discord, parsed.fivem })
 end
 
----Check if player is admin
+---Check if player is admin from database (SQL direct query)
 ---@param source integer Player server ID
 ---@return boolean
 function IsPlayerAdmin(source)
-    if Admins[source] ~= nil then
-        return Admins[source]
-    end
-
-    if IsPlayerAceAllowed(source, Config.AdminAcePermission) then
-        Admins[source] = true
+    -- First check cache
+    if Admins[source] == true then
         return true
     end
 
-    local identifiers = getAllIdentifiers(source)
-    for _, identifier in ipairs(identifiers) do
-        for _, adminId in ipairs(Config.AdminIdentifiers) do
-            if identifier == adminId then
-                Admins[source] = true
-                return true
-            end
-        end
+    -- Get identifier for SQL query
+    local identifier = getPlayerIdentifier(source)
+    if not identifier then
+        return false
     end
 
-    Admins[source] = false
+    -- Query database directly for player group
+    local result = MySQL.query.await([[
+        SELECT `group` FROM players WHERE license = ? LIMIT 1
+    ]], { identifier })
+
+    if result and result[1] then
+        local group = result[1].group or "user"
+        
+        print(("^3[ADMIN CHECK] Source: %d | License: %s | Group: %s^0"):format(source, identifier, group))
+        
+        -- Exclude non-admin groups
+        local nonAdminGroups = {
+            ["user"] = true,
+            ["vip"] = true,
+            ["vip2"] = true,
+            ["vipmax"] = true
+        }
+        
+        -- If group is NOT in the excluded list, they're an admin
+        if not nonAdminGroups[group] then
+            Admins[source] = true
+            print(("^2[ADMIN GRANTED] Player %s is admin (group: %s)^0"):format(GetPlayerName(source), group))
+            return true
+        else
+            print(("^1[ADMIN DENIED] Player %s is not admin (group: %s)^0"):format(GetPlayerName(source), group))
+            return false
+        end
+    end
+    
+    print(("^1[ADMIN CHECK] No database record found for %s^0"):format(identifier))
     return false
 end
+
+---Update admin status and notify client
+---@param source integer Player server ID
+local function updateAdminStatus(source)
+    local wasAdmin = Admins[source] or false
+    local isNowAdmin = IsPlayerAdmin(source)
+    
+    Admins[source] = isNowAdmin
+    
+    if Players[source] then
+        Players[source].isAdmin = isNowAdmin
+        
+        -- Send updated data to client
+        TriggerClientEvent("sws-report:setPlayerData", source, {
+            identifier = Players[source].identifier,
+            name = Players[source].name,
+            isAdmin = isNowAdmin,
+            voiceMessagesEnabled = VoiceMessagesAvailable and Config.VoiceMessages.enabled
+        })
+        
+        -- If admin status changed
+        if isNowAdmin and not wasAdmin then
+            -- New admin - send all active reports
+            local allActiveReports = GetActiveReports()
+            TriggerClientEvent("sws-report:setAllReports", source, allActiveReports)
+            NotifyPlayer(source, "Admin permissions granted", "success")
+            DebugPrint(("Admin permissions granted to %s"):format(Players[source].name))
+        elseif not isNowAdmin and wasAdmin then
+            NotifyPlayer(source, "Admin permissions revoked", "info")
+            DebugPrint(("Admin permissions revoked from %s"):format(Players[source].name))
+        end
+    end
+end
+
+---Handle QBCore group updates (when admin does /setgroup)
+RegisterNetEvent("QBCore:Server:OnGroupUpdate", function(src, newGroup)
+    local source = src or source
+    
+    print(("^5========== GROUP UPDATE ==========^0"))
+    print(("^3Source:^0 %d"):format(source))
+    print(("^3New Group:^0 %s"):format(newGroup))
+    
+    -- Clear cache to force re-check
+    Admins[source] = nil
+    
+    -- Re-check admin status with new group
+    if newGroup ~="user" and newGroup ~="vip" and newGroup ~="vip2" and newGroup ~="vipmax" then
+        Admins[source] = true
+    end
+    
+    print(("^3Is Admin:^0 %s"):format(tostring(isNowAdmin)))
+    print(("^5==================================^0"))
+    
+    if Players[source] then
+        updateAdminStatus(source)
+    end
+end)
+
+---Alternative event names for different QBCore versions
+RegisterNetEvent("QBCore:Server:SetPermission", function(src, permission)
+    local source = src or source
+    print(("^3[PERMISSION UPDATE] Source: %d | Permission: %s^0"):format(source, permission))
+    
+    if Players[source] then
+        Admins[source] = nil -- Clear cache
+        updateAdminStatus(source)
+    end
+end)
+
+---Listen for any permission changes
+AddEventHandler("QBCore:Server:OnPermissionUpdate", function(src)
+    local source = src or source
+    print(("^3[PERMISSION REFRESH] Source: %d^0"):format(source))
+    
+    if Players[source] then
+        Admins[source] = nil -- Clear cache
+        updateAdminStatus(source)
+    end
+end)
 
 ---Get player data
 ---@param source integer Player server ID
@@ -195,46 +297,95 @@ AddEventHandler("playerConnecting", function(name, setKickReason, deferrals)
     DebugPrint(("Player connecting: %s (ID: %d)"):format(name, source))
 end)
 
----Player joined handler
+---Player joined handler - SQL-BASED ADMIN CHECK
 RegisterNetEvent("sws-report:playerJoined", function()
     local source = source
     local identifier = getPlayerIdentifier(source)
 
     local rawName = GetPlayerName(source)
-    local name = SanitizeString(rawName or "Unknown", 50)
+    
+    -- CRITICAL FIX: Sanitize username properly
+    local name = SanitizeUsername(rawName or "Unknown", 50)
+    
+    -- Also create a safe version for logs
+    local logName = SanitizeUsernameForLog(rawName or "Unknown")
 
     if not identifier then
         PrintError(("Could not get identifier for player %d"):format(source))
         return
     end
 
+    -- WAIT A BIT for player to spawn
+    Wait(2000)
+
+    -- SQL QUERY: Get player group directly from database
+    local dbResult = MySQL.query.await([[
+        SELECT `group`, citizenid FROM players WHERE license = ? LIMIT 1
+    ]], { identifier })
+
+    local playerGroup = "user"
+    local isAdmin = false
+
+    if dbResult and dbResult[1] then
+        playerGroup = dbResult[1].group or "user"
+        
+        print(("^5========== PLAYER JOIN ==========^0"))
+        print(("^3Name:^0 %s"):format(logName))
+        print(("^3License:^0 %s"):format(identifier))
+        print(("^3Group from DB:^0 %s"):format(playerGroup))
+        
+        -- Check if admin
+        local nonAdminGroups = {
+            ["user"] = true,
+            ["vip"] = true,
+            ["vip2"] = true,
+            ["vipmax"] = true
+        }
+        
+        isAdmin = not nonAdminGroups[playerGroup]
+        
+        if isAdmin then
+            Admins[source] = true
+            print(("^2✓ ADMIN GRANTED^0"))
+        else
+            print(("^1✗ NOT ADMIN^0"))
+        end
+        print(("^5================================^0"))
+    else
+        print(("^1[ERROR] No database record found for license: %s^0"):format(identifier))
+    end
+
+    -- Store player data
     Players[source] = {
         source = source,
         identifier = identifier,
         name = name,
-        isAdmin = IsPlayerAdmin(source)
+        rawName = rawName,
+        isAdmin = isAdmin
     }
 
     -- Save all player identifiers to database for offline lookup
     savePlayerIdentifiers(source, identifier)
 
-    DebugPrint(("Player joined: %s (%s) - Admin: %s"):format(name, identifier, tostring(Players[source].isAdmin)))
-
+    -- Send player data to client
     TriggerClientEvent("sws-report:setPlayerData", source, {
         identifier = identifier,
         name = name,
-        isAdmin = Players[source].isAdmin,
+        isAdmin = isAdmin,
         voiceMessagesEnabled = VoiceMessagesAvailable and Config.VoiceMessages.enabled
     })
 
+    -- Send player's own reports
     local playerReports = GetPlayerReports(identifier)
     if #playerReports > 0 then
         TriggerClientEvent("sws-report:setReports", source, playerReports)
     end
 
-    if Players[source].isAdmin then
+    -- If admin, send all reports
+    if isAdmin then
         local allActiveReports = GetActiveReports()
         TriggerClientEvent("sws-report:setAllReports", source, allActiveReports)
+        print(("^2[ADMIN] Sent %d active reports to %s^0"):format(#allActiveReports, logName))
     end
 
     broadcastPlayerOnlineStatus(identifier, true)
@@ -252,6 +403,61 @@ AddEventHandler("playerDropped", function(reason)
     Players[source] = nil
     Admins[source] = nil
 end)
+
+---Manual admin refresh command (for testing/debugging)
+RegisterCommand("refreshadmin", function(source)
+    if not source or source == 0 then return end
+    
+    print(("^5========== MANUAL ADMIN REFRESH ==========^0"))
+    print(("^3Source:^0 %d"):format(source))
+    print(("^3Name:^0 %s"):format(GetPlayerName(source)))
+    
+    -- Clear cache
+    Admins[source] = nil
+    
+    -- Force re-check from database
+    local identifier = getPlayerIdentifier(source)
+    if identifier then
+        local dbResult = MySQL.query.await([[
+            SELECT `group` FROM players WHERE license = ? LIMIT 1
+        ]], { identifier })
+        
+        if dbResult and dbResult[1] then
+            local group = dbResult[1].group or "user"
+            print(("^3Database Group:^0 %s"):format(group))
+            
+            local nonAdminGroups = {
+                ["user"] = true,
+                ["vip"] = true,
+                ["vip2"] = true,
+                ["vipmax"] = true
+            }
+            
+            local isAdmin = not nonAdminGroups[group]
+            Admins[source] = isAdmin
+            
+            if Players[source] then
+                Players[source].isAdmin = isAdmin
+            end
+            
+            print(("^3Is Admin:^0 %s"):format(tostring(isAdmin)))
+            
+            if isAdmin then
+                print(("^2✓ ADMIN ACCESS GRANTED^0"))
+            else
+                print(("^1✗ NOT AN ADMIN^0"))
+            end
+        else
+            print(("^1ERROR: No database record found^0"))
+        end
+    end
+    
+    print(("^5==========================================^0"))
+    
+    if Players[source] then
+        updateAdminStatus(source)
+    end
+end, false)
 
 ---Compare semantic versions
 ---@param current string Current version (e.g. "1.0.0")
@@ -347,7 +553,7 @@ AddEventHandler("onResourceStart", function(resourceName)
 
     VoiceMessagesAvailable = checkVoiceMigration()
     if VoiceMessagesAvailable then
-        if not Config.Discord.enabled or not Config.Discord.webhook or Config.Discord.webhook == "" then
+        if not Config.Discord.enabled or not Config.Discord.forumWebhook or Config.Discord.forumWebhook == "" then
             VoiceMessagesAvailable = false
             PrintWarn("Voice messages: disabled - Discord webhook required for audio storage")
             PrintWarn("Configure Config.Discord.enabled and Config.Discord.webhook to enable voice messages")

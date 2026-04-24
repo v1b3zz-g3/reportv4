@@ -24,6 +24,9 @@ local allReports = {}
 
 ---Open the report UI
 ---@param forceAdmin? boolean Force admin mode
+
+
+
 local function openUI(forceAdmin)
     if isUIOpen then return end
 
@@ -565,6 +568,7 @@ end)
 
 -- Command
 RegisterCommand(Config.Command, function()
+
     toggleUI()
 end, false)
 
@@ -573,11 +577,8 @@ RegisterKeyMapping(Config.Command, "Open Report Menu", "keyboard", "")
 
 -- Player loaded
 CreateThread(function()
-    while true do
-        if NetworkIsPlayerActive(PlayerId()) then
-            break
-        end
-        Wait(500)
+    while not NetworkIsPlayerActive(PlayerId()) do
+        Wait(2500)
     end
 
     local savedTheme = GetResourceKvpString("sws-report:theme")
@@ -588,6 +589,36 @@ CreateThread(function()
     TriggerServerEvent("sws-report:playerJoined")
 
     DebugPrint("Player joined event sent")
+end)
+
+-- Add this to client/main.lua at the bottom
+
+RegisterCommand("checkadmin", function()
+    print("^3==================== ADMIN STATUS DEBUG ====================^0")
+    print("^2Player Name:^0 " .. tostring(playerName))
+    print("^2Player ID:^0 " .. tostring(playerIdentifier))
+    print("^2Is Admin:^0 " .. tostring(isAdmin))
+    print("^2UI Open:^0 " .. tostring(isUIOpen))
+    print("^3============================================================^0")
+end, false)
+
+--RegisterCommand("refreshadmin", function()
+--    ExecuteCommand("refreshadmin") -- Triggers server command
+--end, false)
+
+-- Listen for admin status updates
+RegisterNetEvent("sws-report:adminStatusUpdated", function(newAdminStatus)
+    isAdmin = newAdminStatus
+    
+    if isUIOpen then
+        -- Refresh UI with new admin status
+        SendNUIMessage({
+            type = "UPDATE_ADMIN_STATUS",
+            data = {
+                isAdmin = isAdmin
+            }
+        })
+    end
 end)
 
 -- Exports
@@ -606,3 +637,206 @@ end)
 exports("ToggleUI", function()
     toggleUI()
 end)
+
+
+-- Add to client/main.lua - Client-side screenshot debouncing
+
+---@type table<number, number> Local screenshot cooldowns by report ID
+local clientScreenshotCooldowns = {}
+local CLIENT_SCREENSHOT_COOLDOWN = 10000 -- 10 seconds
+
+---Check if screenshot is on cooldown for this report
+---@param reportId number Report ID
+---@return boolean onCooldown
+---@return number remainingSeconds
+local function isScreenshotOnClientCooldown(reportId)
+    if not clientScreenshotCooldowns[reportId] then
+        return false, 0
+    end
+    
+    local now = GetGameTimer()
+    if now < clientScreenshotCooldowns[reportId] then
+        local remaining = math.ceil((clientScreenshotCooldowns[reportId] - now) / 1000)
+        return true, remaining
+    end
+    
+    clientScreenshotCooldowns[reportId] = nil
+    return false, 0
+end
+
+---Set client-side cooldown for report screenshot
+---@param reportId number Report ID
+local function setClientScreenshotCooldown(reportId)
+    clientScreenshotCooldowns[reportId] = GetGameTimer() + CLIENT_SCREENSHOT_COOLDOWN
+    DebugPrint(("Client cooldown set for report #%d"):format(reportId))
+end
+
+-- Override the takeScreenshot callback to include client-side check
+RegisterNUICallback("takeScreenshot", function(data, cb)
+    local reportId = data.reportId
+    
+    if not reportId then
+        cb("ok")
+        return
+    end
+    
+    -- Client-side cooldown check
+    local onCooldown, remaining = isScreenshotOnClientCooldown(reportId)
+    if onCooldown then
+        DebugPrint(("Screenshot blocked - cooldown active (%d seconds remaining)"):format(remaining))
+        
+        -- Send notification to NUI
+        SendNUIMessage({
+            type = NuiMessageType.NOTIFICATION,
+            data = {
+                message = string.format("Please wait %d seconds before taking another screenshot.", remaining),
+                notifyType = "error"
+            }
+        })
+        
+        cb("ok")
+        return
+    end
+    
+    -- Set cooldown immediately
+    setClientScreenshotCooldown(reportId)
+    
+    -- Request screenshot from server
+    TriggerServerEvent("sws-report:requestUserScreenshot", reportId)
+    
+    cb("ok")
+end)
+
+-- Clean up cooldowns periodically
+CreateThread(function()
+    while true do
+        Wait(30000) -- Every 30 seconds
+        
+        local now = GetGameTimer()
+        local cleaned = 0
+        
+        for reportId, cooldownEnd in pairs(clientScreenshotCooldowns) do
+            if now > cooldownEnd then
+                clientScreenshotCooldowns[reportId] = nil
+                cleaned = cleaned + 1
+            end
+        end
+        
+        if cleaned > 0 then
+            DebugPrint(("Cleaned up %d expired screenshot cooldowns"):format(cleaned))
+        end
+    end
+end)
+
+-- Status command for debugging
+RegisterCommand("screenshotstatus", function()
+    print("^3========== Screenshot Cooldown Status ==========^0")
+    print(("Active cooldowns: %d"):format(#clientScreenshotCooldowns))
+    
+    local now = GetGameTimer()
+    for reportId, cooldownEnd in pairs(clientScreenshotCooldowns) do
+        local remaining = math.ceil((cooldownEnd - now) / 1000)
+        if remaining > 0 then
+            print(("  Report #%d: %d seconds remaining"):format(reportId, remaining))
+        end
+    end
+    print("^3==============================================^0")
+end, false)
+
+-- Add this to client/main.lua at the bottom for debugging
+
+-- Intercept new messages to debug voice messages
+local originalNewMessageHandler = RegisterNetEvent
+RegisterNetEvent("sws-report:newMessage", function(message)
+    print("^3[CLIENT-VOICE] Received new message event^0")
+    print(("^3[CLIENT-VOICE] Message ID: %s^0"):format(tostring(message.id)))
+    print(("^3[CLIENT-VOICE] Sender: %s^0"):format(tostring(message.senderName)))
+    print(("^3[CLIENT-VOICE] Type: %s^0"):format(tostring(message.messageType)))
+    
+    if message.messageType == "voice" then
+        print("^2[CLIENT-VOICE] This is a VOICE message!^0")
+        print(("^2[CLIENT-VOICE] Audio URL: %s^0"):format(tostring(message.audioUrl)))
+        print(("^2[CLIENT-VOICE] Duration: %s seconds^0"):format(tostring(message.audioDuration)))
+    end
+    
+    -- Update report data
+    for i, r in ipairs(myReports) do
+        if r.id == message.reportId then
+            myReports[i].messages = myReports[i].messages or {}
+            table.insert(myReports[i].messages, message)
+            break
+        end
+    end
+
+    for i, r in ipairs(allReports) do
+        if r.id == message.reportId then
+            allReports[i].messages = allReports[i].messages or {}
+            table.insert(allReports[i].messages, message)
+            break
+        end
+    end
+
+    if isUIOpen then
+        print("^3[CLIENT-VOICE] UI is open, sending to NUI^0")
+        SendNUIMessage({
+            type = NuiMessageType.NEW_MESSAGE,
+            data = message
+        })
+    else
+        print("^1[CLIENT-VOICE] UI is NOT open!^0")
+    end
+end)
+
+-- Debug command to check message reception
+RegisterCommand("checkmessages", function()
+    print("^3========== MESSAGE DEBUG ==========^0")
+    print(("UI Open: %s"):format(tostring(isUIOpen)))
+    print(("Is Admin: %s"):format(tostring(isAdmin)))
+    print(("My Reports Count: %d"):format(#myReports))
+    print(("All Reports Count: %d"):format(#allReports))
+    
+    -- Check for voice messages
+    local voiceCount = 0
+    for _, report in ipairs(allReports) do
+        if report.messages then
+            for _, msg in ipairs(report.messages) do
+                if msg.messageType == "voice" then
+                    voiceCount = voiceCount + 1
+                    print(("^2Found voice message: Report #%d, Sender: %s, URL: %s^0"):format(
+                        report.id, msg.senderName, msg.audioUrl
+                    ))
+                end
+            end
+        end
+    end
+    
+    print(("Total voice messages found: %d"):format(voiceCount))
+    print("^3===================================^0")
+end, false)
+
+-- Test if NUI is receiving messages
+RegisterCommand("testnui", function()
+    print("^3[NUI-TEST] Sending test message to NUI^0")
+    
+    SendNUIMessage({
+        type = "TEST_MESSAGE",
+        data = {
+            test = "Hello from client!",
+            timestamp = GetGameTimer()
+        }
+    })
+    
+    print("^2[NUI-TEST] Test message sent^0")
+end, false)
+
+-- Force refresh messages for a report
+RegisterCommand("refreshmessages", function(source, args)
+    local reportId = tonumber(args[1])
+    if not reportId then
+        print("^1Usage: /refreshmessages [reportId]^0")
+        return
+    end
+    
+    print(("^3[REFRESH] Requesting messages for report #%d^0"):format(reportId))
+    TriggerServerEvent("sws-report:getMessages", reportId)
+end, false)

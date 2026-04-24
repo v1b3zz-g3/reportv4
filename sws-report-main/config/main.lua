@@ -72,8 +72,8 @@ Config.Locale = "en"
 Config.Command = "report"
 
 -- Report Settings
-Config.Cooldown = 60
-Config.MaxActiveReports = 3
+Config.Cooldown = 120
+Config.MaxActiveReports = 1
 Config.Categories = {
     { id = "general", label = "General", icon = "fa-circle-info" },
     { id = "bug", label = "Bug Report", icon = "fa-bug" },
@@ -90,7 +90,7 @@ Config.Priorities = {
 }
 
 -- Admin Settings
-Config.AdminAcePermission = "report.admin"
+Config.AdminAcePermission = "trial"
 Config.AdminIdentifiers = {
     -- "steam:110000xxxxxxxxx",
     -- "license:xxxxxxxxxxxxx"
@@ -109,7 +109,9 @@ Config.Sounds = {
 -- Set to nil to use built-in notifications, or define your own function
 -- Function signature: function(source, message, type)
 -- type is: "success", "error", or "info"
-Config.CustomNotify = nil
+Config.CustomNotify = function(source, message, type)
+    TriggerClientEvent('QBCore:Notify', source, message, type)
+end
 
 --[[ ESX Example:
 Config.CustomNotify = function(source, message, type)
@@ -135,33 +137,54 @@ end
 
 -- Discord Webhook
 Config.Discord = {
-    enabled = false,
-    webhook = "",
+    enabled = true,
+
+    -- Main forum webhook - ALL report activity goes here as individual threads
+    -- IMPORTANT: This MUST be a webhook from a FORUM channel
+    forumWebhook = "https://discord.com/api/webhooks/1457444259228549308/TETNCMMvNLlRFw52q7tcX6fUboPWzzfNrEp5iRlLrzA63Fgx0KQ_7AnbhpyfaEUeTRf8",
+    
     botName = "Report System",
     botAvatar = "",
 
-    -- Event Toggles (enable/disable individual events)
+    -- Thread naming format
+    -- Available placeholders: {id}, {player}, {playerId}, {subject}
+    -- Max 100 characters (Discord limit)
+    threadNameFormat = "[#{id}]-{player}",
+    -- Example result: "[#123] John_Doe - Vehicle Bug"
+    -- Alternative: "[#{id}] {playerId} - {subject}" for searchable IDs
+
+    -- Event Toggles (enable/disable individual log types)
     events = {
-        newReport = true,
-        reportClaimed = true,
-        reportUnclaimed = true,
-        reportResolved = true,
-        reportDeleted = true,
-        chatMessage = false,    -- Disabled by default (can be spammy)
-        voiceMessage = true,
-        adminAction = true,
-        inventoryAction = true  -- Log inventory management actions
+        newReport = true,        -- Initial report creation (creates thread)
+        reportClaimed = true,    -- When admin claims report
+        reportUnclaimed = true,  -- When admin unclaims report
+        reportResolved = true,   -- When report is resolved
+        reportDeleted = true,    -- When report is deleted
+        chatMessage = true,      -- Text messages in report
+        voiceMessage = true,     -- Voice messages in report
+        adminAction = true,      -- Admin actions (teleport, heal, etc.)
+        inventoryAction = true   -- Inventory management actions
     },
 
     -- Embed Colors (decimal)
     colors = {
-        new = 3447003,          -- Blue
-        claimed = 16776960,     -- Yellow
-        resolved = 3066993,     -- Green
-        deleted = 15158332,     -- Red
-        message = 7506394,      -- Purple
-        admin = 16753920,       -- Orange
-        inventory = 10181046    -- Purple (Inventory actions)
+        new = 3447003,          -- Blue - New report
+        claimed = 16776960,     -- Yellow - Claimed
+        resolved = 3066993,     -- Green - Resolved
+        deleted = 15158332,     -- Red - Deleted
+        message = 7506394,      -- Purple - Chat messages
+        admin = 16753920,       -- Orange - Admin actions
+        inventory = 10181046,   -- Purple - Inventory actions
+        voice = 5793266         -- Teal - Voice messages
+    },
+
+    -- Archive settings for resolved/deleted reports
+    autoArchive = {
+        enabled = true,
+        -- Auto-archive thread when report is resolved/deleted
+        -- Duration in minutes: 60 = 1 hour, 1440 = 24 hours, 4320 = 3 days, 10080 = 7 days
+        onResolved = 60,  -- Archive after 24 hours when resolved
+        onDeleted = 60      -- Archive after 1 hour when deleted
     }
 }
 
@@ -199,7 +222,7 @@ Config.Inventory = {
         add = true,
         remove = true,
         set = true,
-        metadata_edit = true    -- ox_inventory only, ESX default does not support metadata
+        metadata_edit = false    -- ox_inventory only, ESX default does not support metadata
     },
 
     -- Discord logging (uses same webhook as main Discord config)

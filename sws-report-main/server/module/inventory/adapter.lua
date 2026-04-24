@@ -27,6 +27,7 @@
 InventorySystem = {
     OX_INVENTORY = "ox_inventory",
     ESX_DEFAULT = "esx_default",
+    QB_INVENTORY = "qb-inventory",
     NONE = "none"
 }
 
@@ -43,6 +44,8 @@ InventorySystemName = InventorySystem.NONE
 local function detectInventorySystem()
     if GetResourceState("ox_inventory") == "started" then
         return InventorySystem.OX_INVENTORY
+    elseif GetResourceState("qs-inventory") == "started" and GetResourceState("qb-core") == "started" then
+        return InventorySystem.QB_INVENTORY
     elseif GetResourceState("es_extended") == "started" then
         return InventorySystem.ESX_DEFAULT
     end
@@ -61,6 +64,13 @@ function CreateInventoryAdapter()
             InventoryAdapter = OxInventoryAdapter
             PrintInfo(("Inventory adapter initialized: %s"):format(OxInventoryAdapter.GetName()))
             return OxInventoryAdapter
+        end
+    elseif system == InventorySystem.QB_INVENTORY then
+        DebugPrint("Initializing qb-inventory adapter")
+        if QBInventoryAdapter and QBInventoryAdapter.IsAvailable() then
+            InventoryAdapter = QBInventoryAdapter
+            PrintInfo(("Inventory adapter initialized: %s"):format(QBInventoryAdapter.GetName()))
+            return QBInventoryAdapter
         end
     elseif system == InventorySystem.ESX_DEFAULT then
         DebugPrint("Initializing ESX default inventory adapter")
